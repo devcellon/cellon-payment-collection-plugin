@@ -223,9 +223,34 @@
             var input = {
                 currency: config.checkout && config.checkout.currency ? config.checkout.currency : undefined,
                 amount: config.checkout && config.checkout.amount ? Number(config.checkout.amount) : undefined,
+                priceCategory: priceCategory,
             };
             if (customerEmail) input.customerEmail = customerEmail;
             return input;
+        }
+
+        /**
+         * The plan the buyer picked on a multi-plan page, read when an intent starts: the page's
+         * ab_testing_price_category field (wwiqtest quiz-checkout-v3: hidden #plan_type_field, '' for the
+         * trial plan, a price_list category such as "regular" otherwise; a radio group works too).
+         * null when the page has no such field: the server then keeps the plan the checkout was rendered with.
+         */
+        function priceCategory() {
+            var fields;
+            try {
+                fields = document.querySelectorAll(config.priceCategoryField || 'input[name="ab_testing_price_category"]');
+            } catch (e) {
+                return null;
+            }
+            for (var i = 0; i < fields.length; i++) {
+                var field = fields[i];
+                if (field.type === "radio" || field.type === "checkbox") {
+                    if (field.checked) return String(field.value || "");
+                    continue;
+                }
+                return String(field.value || "");
+            }
+            return null;
         }
 
         function verifyPayment() {
@@ -264,7 +289,8 @@
                 express.hidden = !walletShown && !directShown;
                 express.classList.toggle("cpc-express--single", !(walletShown && directShown));
             }
-            if (line) line.hidden = express ? express.hidden : true;
+            var chainBox = root.querySelector(".cpc-box--chain");
+            if (line) line.hidden = (express ? express.hidden : true) || !chainBox || chainBox.hidden;
 
             var state = activeOf(chainUnit());
             var mounted = !!state && SHOWN.indexOf(state.status) !== -1;
@@ -340,6 +366,9 @@
                         if (!attempts.some(function (a) { return a.failure && a.failure.stage !== "load" && a.failure.stage !== "intent"; })) box.hidden = true;
                     } else {
                         say(paid ? messages.failed : messages.unavailable);
+                        // Every card gateway is used up: no empty card frame under "Or Pay with Card" (the
+                        // notice lives outside the box; wallets / PayPal above stay)
+                        box.hidden = true;
                     }
                     syncLayout();
                     emit(root, "exhausted", { box: isDirect ? "direct" : "chain", attempts: attempts });

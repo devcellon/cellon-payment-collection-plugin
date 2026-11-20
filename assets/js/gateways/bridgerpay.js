@@ -8,7 +8,9 @@
  * BridgerPay cascades between its own PSPs first, so a decline here means every PSP declined.
  *
  * Options (Bridgerpay_Provider::browser_options): mode, session, attributes, blox { labels, placeholders,
- * style, fontsSources, classNames }, confirmPollMs, confirmTimeoutMs, threeDsTimeoutMs.
+ * style, fontsSources, classNames }, confirmPollMs, confirmTimeoutMs, threeDsTimeoutMs,
+ * wallet (BLOX: Google Pay / Apple Pay in walletContainerId, default on), walletSession (extra session
+ * options for that wallet widget).
  */
 (function (window, document) {
     "use strict";
@@ -18,6 +20,27 @@
     var BLOX_SDK = "https://checkout.bridgerpay.com/sdk";
     var PROCESSING_EVENTS = ["processingPayment", "processingDeposit", "loadingPSP", "processingPSP", "showProgressScreen"];
     var DECLINED = /declin|fail|reject|cancel|void|error|block/i;
+    var INVALID_COLOR = "#eb1c26";
+    var CSS_ID = "cellon-bridgerpay-css";
+    var CSS =
+        // After a Pay click with incomplete fields: BLOX flags each empty or invalid field with
+        // bp-blox--invalid (and drops the class as the customer fixes it); the red outline beats the
+        // browser's focus ring on the name field
+        ".cellon-blox--checked .bp-blox--invalid,.cellon-blox--checked .cellon-blox__input:invalid{border-color:" + INVALID_COLOR + "!important}" +
+        ".cellon-blox--checked .cellon-blox__input:invalid{outline-color:" + INVALID_COLOR + "}" +
+        // The native wallet button fills the slot at the height of Stripe's and Solidgate's wallet buttons
+        ".cellon-bridgerpay__wallet{width:100%}" +
+        ".cellon-bridgerpay__wallet .wallet-google-pay,.cellon-bridgerpay__wallet .wallet-google-pay>div{width:100%!important}" +
+        ".cellon-bridgerpay__wallet button.gpay-button{display:block;width:100%!important;min-width:0!important;height:50px!important;border-radius:4px!important}" +
+        ".cellon-bridgerpay__wallet apple-pay-button{display:block;width:100%;--apple-pay-button-width:100%;--apple-pay-button-height:50px;--apple-pay-button-border-radius:4px}";
+
+    function addStyles() {
+        if (document.getElementById(CSS_ID)) return;
+        var style = document.createElement("style");
+        style.id = CSS_ID;
+        style.textContent = CSS;
+        document.head.appendChild(style);
+    }
 
     var SESSION_KEYS = {
         singlePaymentMethod: "single_payment_method",
@@ -201,6 +224,102 @@
         });
     }
 
+    /**
+     * Google Pay / Apple Pay beside BLOX. BLOX has no wallets, so a second session (single payment method
+     * "wallet": Apple Pay where ApplePaySession exists, else Google Pay) runs the launcher in wallet button
+     * mode (data-button-mode="wallet"): BridgerPay's wallet script draws the native Google Pay / Apple Pay
+     * button in the page's wallet slot, like Stripe's and Solidgate's, and shows its own 3DS modal. It reports
+     * on `[bp][checkout:<cashier_key>]:wallet-*` events and pays its own order_id; a decline there is a
+     * decline of this gateway. Any problem before the customer pays only leaves the slot empty.
+     */
+    function mountWallet(ctx, isLive) {
+        var settings = ctx.options || {};
+        var slot = settings.walletContainerId ? document.getElementById(settings.walletContainerId) : null;
+        if (!slot || settings.wallet === false) return Promise.resolve(null);
+
+        var session = toSession(assign({}, settings.session, settings.walletSession, {
+            singlePaymentMethod: "wallet",
+            alwaysVisibleInputs: undefined,
+            hideLanguagesDropdown: true,
+        }));
+        return ctx.api.intent({ bridgerpay_mode: "checkout", bridgerpay_session: session }).then(function (intent) {
+            var cashierKey = CP.cleanValue(intent && intent.cashier_key);
+            var cashierToken = CP.cleanValue(intent && intent.cashier_token);
+            var orderId = CP.cleanValue(intent && intent.order_id);
+            if (!isLive() || !cashierKey || !cashierToken || !orderId) return null;
+            var accountId = CP.cleanValue(intent.payment_provider_detail_id) || ctx.gateway.accountId;
+
+            var host = document.createElement("div");
+            host.className = "cellon-bridgerpay__wallet";
+            // Built off screen; it moves into the slot once its button is ready (the page shows the wallet
+            // row whenever the slot has children)
+            host.style.cssText = "position:absolute;left:-10000px;top:0;width:300px";
+            addStyles();
+            var processing = false, settled = false;
+            var listeners = [];
+            var prefix = "[bp][checkout:" + cashierKey + "]:";
+            function on(name, handler) {
+                var listener = function (event) { if (isLive() && !settled) handler(event.detail || {}); };
+                window.addEventListener(prefix + name, listener);
+                listeners.push([prefix + name, listener]);
+            }
+            function remove() {
+                listeners.forEach(function (entry) { window.removeEventListener(entry[0], entry[1]); });
+                listeners = [];
+                if (host.parentNode) host.parentNode.removeChild(host);
+            }
+            function confirm(paid, fallback) {
+                settled = true;
+                return pollConfirm(ctx, {
+                    orderId: orderId,
+                    accountId: accountId,
+                    isLive: isLive,
+                    paid: paid,
+                    fallback: fallback,
+                    pollMs: settings.confirmPollMs || 3000,
+                    timeoutMs: settings.confirmTimeoutMs || 60000,
+                });
+            }
+
+            on("wallet-button-is-ready", function () {
+                host.style.cssText = "";
+                slot.appendChild(host);
+            });
+            // No wallet on this device or browser, or the account has none enabled
+            on("wallet-provider-cannot-be-used", remove);
+            on("no-wallet-provider-found", remove);
+            on("wallet-processing-payment", function () {
+                if (processing) return;
+                processing = true;
+                ctx.events.processing();
+            });
+            // The customer closed the wallet sheet: not an attempt
+            on("wallet-cancelled", function () {
+                if (!processing) return;
+                processing = false;
+                ctx.events.cancelled();
+            });
+            on("wallet-result", function (result) {
+                var status = String(result.status || "").toLowerCase().replace(/\s+/g, "_");
+                if (!status || DECLINED.test(status)) {
+                    settled = true;
+                    return ctx.events.failed({ stage: "payment", code: status || "declined", message: result.reason || result.message || "Payment declined", raw: result });
+                }
+                // approved / pending / authorized: the server reads BridgerPay's own record
+                confirm(true, { stage: "payment", code: "outcome_unknown", message: "Payment outcome unknown" });
+            });
+
+            var script = document.createElement("script");
+            script.src = LAUNCHER_JS;
+            script.async = true;
+            assign(script.dataset, settings.attributes, { cashierKey: cashierKey, cashierToken: cashierToken, buttonMode: "wallet" });
+            script.onerror = remove;
+            host.appendChild(script);
+            document.body.appendChild(host);
+            return { destroy: remove };
+        }, function () { return null; });
+    }
+
     /* BLOX: card fields in BridgerPay's iframes, the page's email field and Pay button */
     function mountBlox(ctx) {
         var gateway = ctx.gateway, host = ctx.host, events = ctx.events;
@@ -244,10 +363,12 @@
                     return node;
                 }
 
+                addStyles();
                 var root = element("div", "root");
                 var holder = element("input", "input");
                 holder.id = id + "-holder";
                 holder.autocomplete = "cc-name";
+                holder.required = true;
                 holder.placeholder = placeholders.cardHolder;
                 var number = slot("number"), expiry = slot("expiry"), cvv = slot("cvv");
                 var row = element("div", "row");
@@ -268,19 +389,27 @@
                     throw CP.GatewayError("load", "blox_mount_failed", (error && error.message) || "BLOX fields could not be mounted", error);
                 }).then(function () {
                     events.ready();
-                    var live = true, busy = false;
+                    var live = true, busy = false, wallet = null;
                     var isLive = function () { return live; };
+                    // Its own session, opened after the card session (one intent at a time per checkout)
+                    mountWallet(ctx, isLive).then(function (mounted) {
+                        if (mounted && !live) mounted.destroy();
+                        else wallet = mounted;
+                    });
+
+                    // Incomplete fields are not a payment attempt (as Stripe): mark them and stay on this form
+                    function incomplete(focusHolder) {
+                        if (controller.validateAll) controller.validateAll();
+                        root.classList.add("cellon-blox--checked");
+                        if (focusHolder) holder.focus();
+                        events.cancelled();
+                        return Promise.resolve();
+                    }
 
                     function submit() {
                         if (busy || !live) return Promise.resolve();
                         var cardHolderName = holder.value.trim();
-                        if (!cardHolderName || controller.isAllValid === false) {
-                            if (controller.validateAll) controller.validateAll();
-                            if (!cardHolderName) holder.focus();
-                            // The customer fixes it on the same form
-                            events.failed({ stage: "payment", code: "validation_error", message: "Please check your card details." });
-                            return Promise.resolve();
-                        }
+                        if (!cardHolderName || controller.isAllValid === false) return incomplete(!cardHolderName);
                         busy = true;
                         // Multi-use: the cross sale charges the same card again
                         return Promise.resolve(controller.createPaymentCardToken({ cardHolderName: cardHolderName, singleUse: false })).then(function (card) {
@@ -329,9 +458,10 @@
                                 if (/already exists/i.test(error.message || "")) return events.failed({ stage: "intent", code: "already_paid", message: error.message, raw: error });
                                 events.failed(CP.toFailure("bridgerpay", CP.atStage("payment", error), "payment"));
                             });
-                        }, function (error) {
+                        }, function () {
+                            // BLOX refused to tokenize the fields: nothing was sent for payment
                             busy = false;
-                            events.failed({ stage: "payment", code: "validation_error", message: (error && error.message) || "Please check your card details.", raw: error });
+                            return incomplete(false);
                         });
                     }
 
@@ -339,6 +469,7 @@
                         submit: submit,
                         destroy: function () {
                             live = false;
+                            if (wallet) wallet.destroy();
                             while (host.firstChild) host.removeChild(host.firstChild);
                         },
                     };

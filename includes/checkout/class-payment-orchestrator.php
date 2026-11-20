@@ -24,6 +24,7 @@ namespace Cellon\PaymentCollection\Checkout;
 
 use Cellon\PaymentCollection\Api\Api_Response;
 use Cellon\PaymentCollection\Api\Payment_Api;
+use Cellon\PaymentCollection\Flow_Log;
 use Cellon\PaymentCollection\Logger;
 use Cellon\PaymentCollection\Providers\Provider;
 use Cellon\PaymentCollection\Providers\Provider_Registry;
@@ -71,6 +72,7 @@ final class Payment_Orchestrator {
 			if ( ! $session ) {
 				return $this->expired();
 			}
+			Flow_Log::quiz( (string) ( $session->context['quiz_result_id'] ?? '' ) );
 			if ( $session->is_paid() ) {
 				return $this->already_paid( $session );
 			}
@@ -93,6 +95,11 @@ final class Payment_Orchestrator {
 			$account = $this->account( $input );
 			if ( ! $session->account_allowed( $slug, $account ) ) {
 				return $this->error( 422, 'invalid_payment_account', __( 'This payment method is not available. Please reload the page.', 'cellon-payment-collection' ) );
+			}
+
+			$plan = $this->apply_price_category( $session, $input );
+			if ( is_wp_error( $plan ) ) {
+				return $this->wp_error( $plan );
 			}
 
 			$provider = $this->registry->get( $slug );
@@ -157,6 +164,7 @@ final class Payment_Orchestrator {
 			if ( ! $session ) {
 				return $this->expired();
 			}
+			Flow_Log::quiz( (string) ( $session->context['quiz_result_id'] ?? '' ) );
 			if ( $session->is_paid() ) {
 				return $this->paid_response( $session, null );
 			}
@@ -472,6 +480,41 @@ final class Payment_Orchestrator {
 		if ( session_status() === PHP_SESSION_ACTIVE ) {
 			$_SESSION['skip_offer'] = true;
 		}
+	}
+
+	/**
+	 * The plan the buyer picked on a multi-plan page (e.g. wwiqtest quiz-checkout-v3: trial = '', or a
+	 * pricing_info.price_list category such as "regular"), sent as ab_testing_price_category with an intent.
+	 * Only an intent may change it, and only to '' or a category of this quiz result's price_list (the API
+	 * charges that category's prices). It is kept on the checkout, so the confirm / charge-token / cross-sale
+	 * bodies name the same plan, and in $_SESSION['ab_testing_price_category'] as the Core plugin's intent
+	 * handlers store it, so the Core plugin's cross sale, customer email update and Offers page use it too.
+	 * Without the key the plan stays as rendered (the session's category, usually none).
+	 *
+	 * @param array<string,mixed> $input
+	 * @return true|\WP_Error
+	 */
+	private function apply_price_category( Checkout_Session $session, array $input ) {
+		if ( ! array_key_exists( 'ab_testing_price_category', $input ) ) {
+			return true;
+		}
+		$category = is_string( $input['ab_testing_price_category'] ) ? trim( $input['ab_testing_price_category'] ) : null;
+		$context  = $session->context();
+		if ( $category === null || ! $context->price_category_allowed( $category ) ) {
+			Logger::log( 'intent.price_category_rejected', [ 'category' => is_scalar( $input['ab_testing_price_category'] ) ? substr( (string) $input['ab_testing_price_category'], 0, 64 ) : gettype( $input['ab_testing_price_category'] ) ] );
+			return new \WP_Error(
+				'invalid_field',
+				/* translators: %s: field name */
+				sprintf( __( 'Invalid payment data (%s).', 'cellon-payment-collection' ), 'ab_testing_price_category' ),
+				[ 'status' => 422, 'field' => 'ab_testing_price_category', 'step' => 'intent' ]
+			);
+		}
+		$context->set_price_category( $category );
+		$session->context = $context->to_array();
+		if ( session_status() === PHP_SESSION_ACTIVE ) {
+			$_SESSION['ab_testing_price_category'] = $category;
+		}
+		return true;
 	}
 
 	/** @return array{status:int, body:array<string,mixed>}|null */

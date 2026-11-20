@@ -64,6 +64,12 @@
                 onError: function (error) {
                     // accountChanged already started a reload
                     if (orderFailure && orderFailure.code === "account_changed") return;
+                    // The buyer closed PayPal's window before approving: PayPal reports that through onError
+                    // ("Window is closed, can not determine type") instead of onCancel; it is not a failed payment
+                    if (!orderFailure && /window is closed|window closed|popup.*clos/i.test(String((error && error.message) || error || ""))) {
+                        events.cancelled();
+                        return;
+                    }
                     events.failed(orderFailure || { stage: "payment", code: "paypal_error", message: (error && error.message) || "PayPal error", raw: error });
                 },
             });

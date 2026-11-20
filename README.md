@@ -9,7 +9,7 @@ One WordPress plugin, one source folder, installed unchanged on **iqpro**, **wwi
 
 The shortcode shows the payment providers the Cellon API configures for the quiz result. The result is fetched through the installed quiz-funnel-core plugin (`cellonnexus()->quiz->get_results()`).
 
-- **Provider sequence** from `payment_provider_details`, lowest `order` first. Provider 1 mounts; after a declined payment, provider 2 mounts in the same place, and a decline there keeps the customer on it (one fallback, `max_switches`). A provider that cannot load is skipped.
+- **Provider sequence** from `payment_provider_details`, lowest `order` first. Provider 1 mounts; after a declined payment, provider 2 mounts in the same place, then provider 3: every provider is tried once and a failed one is never mounted again (`max_switches`, `last_gateway`). A provider that cannot load is skipped. BridgerPay BLOX also shows BridgerPay's Google Pay / Apple Pay in the wallet slot.
 - **Direct providers** from `direct_payment_provider_details`, for example PayPal. Each loads on its own, next to the wallet button (Google Pay / Apple Pay); the plugin lays out that row itself (`express_layout`).
 - **Customer messages** in the page's language (built in for en, ja, ko, zh, id, vi, th, ms; others English).
 
@@ -21,7 +21,7 @@ Each site keeps its current behaviour, ported from the themes' `stripe-new.js` /
 - ACF labels;
 - the theme markup and classes, in the Quiz Payment dialog or inline on the checkout page.
 
-There is no settings page. The API URL, API secret, x-host and redirect pages come from quiz-funnel-core's settings, so they are configured in one place.
+The plugin's one setting is its on/off switch: **Settings → Payment Collection**, an ACF options page (Secure Custom Fields or ACF PRO). The checkout runs only when the plugin is active **and** that switch is On. It is per site (every site of a multisite network has its own switch) and, on WPML sites, can be limited to some languages. Off, the theme keeps its own payment code. The API URL, API secret, x-host and redirect pages come from quiz-funnel-core's settings, so they are configured in one place.
 
 Every payment call runs on the server. The browser talks only to this plugin's REST endpoints and to the providers' own SDKs. It never receives the Cellon API token or a provider secret, and never reports a payment result itself. The API confirms each payment, and for PayPal it captures the order.
 

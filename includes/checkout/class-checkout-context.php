@@ -12,7 +12,9 @@
  *   amount                           float       major units; needed by Stripe's deferred card form
  *   payment_mode                     string      as on the quiz result ("live", "sandbox" ...), informational
  *   extra                            array       user_on_iqbooster (default false), prc_id, pricing_discount,
- *                                                ab_testing_price_category: sent with every payment call
+ *                                                ab_testing_price_category: sent with every payment call;
+ *                                                price_categories: the quiz result's price_list categories, the
+ *                                                only ones a page's plan choice may switch to (see Payment_Orchestrator)
  *   payment_provider_details         array       fallback chain, as the API returns it
  *   direct_payment_provider_details  array       direct providers, as the API returns it
  *                                                (fixed_payment_provider_details accepted as alias)
@@ -40,6 +42,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 final class Checkout_Context {
 
 	const FLOWS = [ 'first-sale', 'cross-sale' ];
+
+	/** An A/B price category as the API names them in pricing_info.price_list ("regular" ...). */
+	const CATEGORY_PATTERN = '/^[A-Za-z0-9_-]{1,64}$/';
 
 	/** @var string */
 	public $flow;
@@ -111,6 +116,13 @@ final class Checkout_Context {
 		if ( ! empty( $extra['ab_testing_price_category'] ) && is_scalar( $extra['ab_testing_price_category'] ) ) {
 			$context->extra['ab_testing_price_category'] = sanitize_text_field( (string) $extra['ab_testing_price_category'] );
 		}
+		$categories = [];
+		foreach ( isset( $extra['price_categories'] ) && is_array( $extra['price_categories'] ) ? $extra['price_categories'] : [] as $category ) {
+			if ( is_string( $category ) && $category !== '' && preg_match( self::CATEGORY_PATTERN, $category ) ) {
+				$categories[] = $category;
+			}
+		}
+		$context->extra['price_categories'] = array_values( array_unique( $categories ) );
 
 		$context->providers = Provider_Config::from_response( $data, $registry );
 
@@ -177,6 +189,23 @@ final class Checkout_Context {
 			$fields['ab_testing_price_category'] = $this->extra['ab_testing_price_category'];
 		}
 		return $with_email ? [ 'email' => $this->email ] + $fields : $fields;
+	}
+
+	/**
+	 * A plan the page may switch this checkout to: '' (the default price) or one of the quiz result's
+	 * price_list categories. Anything else never reaches the API.
+	 */
+	public function price_category_allowed( string $category ): bool {
+		return $category === '' || in_array( $category, (array) ( $this->extra['price_categories'] ?? [] ), true );
+	}
+
+	/** The plan every later payment call of this checkout names ('' = the default price, key not sent). */
+	public function set_price_category( string $category ): void {
+		if ( $category === '' ) {
+			unset( $this->extra['ab_testing_price_category'] );
+		} else {
+			$this->extra['ab_testing_price_category'] = $category;
+		}
 	}
 
 	/** @return array<string,mixed> Serializable form for the session store. */

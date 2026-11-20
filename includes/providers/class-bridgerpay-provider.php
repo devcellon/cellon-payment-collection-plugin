@@ -64,10 +64,17 @@ class Bridgerpay_Provider extends Abstract_Provider {
 		];
 	}
 
-	/** Widget session look, and the BLOX field labels / placeholders. Mode: the account's checkout_mode. */
+	/**
+	 * Widget session look, the BLOX field labels / placeholders, and the wallet slot. Mode: the account's
+	 * checkout_mode. With BLOX, Google Pay / Apple Pay open on a wallet-only Checkout session in the page's
+	 * wallet slot (the same element Stripe's and Solidgate's wallets use); 'wallet' => false turns it off.
+	 */
 	public function browser_options( array $env ): array {
 		$page_id = (int) ( $env['page_id'] ?? 0 );
+		$ids     = (array) ( $env['ids'] ?? [] );
 		return [
+			'wallet'            => true,
+			'walletContainerId' => (string) ( $ids['wallets'] ?? '' ),
 			// alwaysVisibleInputs: the widget shows its own email input (the session carries the quiz
 			// result's dummy address) once the API generation forwards bridgerpay_session to the Vault.
 			'session' => [ 'singlePaymentMethod' => 'credit_card', 'theme' => 'light', 'payMode' => true, 'alwaysVisibleInputs' => [ 'email' => [ 'credit_card' ] ] ],

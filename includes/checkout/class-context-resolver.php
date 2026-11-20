@@ -140,6 +140,14 @@ final class Context_Resolver {
 			$amount = is_array( $first ) && isset( $first['amount'] ) ? $first['amount'] : ( $pricing['first_sale_price'] ?? null );
 		}
 
+		// A/B price plans (pricing_info.price_list): the categories a multi-plan page may let the buyer pick
+		$categories = [];
+		foreach ( isset( $pricing['price_list'] ) && is_array( $pricing['price_list'] ) ? $pricing['price_list'] : [] as $plan ) {
+			if ( is_array( $plan ) && isset( $plan['ab_testing_price_category'] ) && is_string( $plan['ab_testing_price_category'] ) && $plan['ab_testing_price_category'] !== '' ) {
+				$categories[] = $plan['ab_testing_price_category'];
+			}
+		}
+
 		$session = session_status() === PHP_SESSION_ACTIVE;
 		$data    = [
 			'quiz_result_id' => $id,
@@ -153,6 +161,7 @@ final class Context_Resolver {
 				// Same shape as the Core plugin's Request_Helper::pricing_discount()
 				'pricing_discount'          => [ 'mdid' => $session ? ( $_SESSION['mdid'] ?? '' ) : '' ],
 				'ab_testing_price_category' => $session ? ( $_SESSION['ab_testing_price_category'] ?? '' ) : '',
+				'price_categories'          => $categories,
 			],
 			'display'        => $pricing,
 		];

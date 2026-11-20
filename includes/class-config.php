@@ -1,6 +1,7 @@
 <?php
 /**
- * Server-only configuration. This plugin has no settings screen and stores no settings of its own.
+ * Server-only configuration. The plugin's only own setting is its on/off switch, an ACF options page
+ * (Settings → Payment Collection, per site and per WPML language; see Settings). Everything else:
  *
  *   API URL, API secret       the quiz-funnel-core plugin's settings (Settings → CellonNexus):
  *                             cellonnexus_env, cellonnexus_api_url_<env>, cellonnexus_api_secret
@@ -14,6 +15,9 @@
  *
  *   CELLON_PAYMENT_API_ADAPTER   current | common                     default current
  *   CELLON_PAYMENT_DEBUG         true writes payment steps to the PHP error log
+ *   CELLON_PAYMENT_FLOW_LOG      'paypal' (comma list, or true) writes every API call of that provider's
+ *                                payments, up to the cross sale, with full bodies to one text file per quiz
+ *                                wp-content/cellon-payment-logs/<provider>-flow-quiz-<id>.txt (Flow_Log)
  *   cellon_payment_collection_enabled_providers   filter, default every provider the plugin has
  *   cellon_payment_collection_legacy_guards       filter, default none (old flows keep working)
  *

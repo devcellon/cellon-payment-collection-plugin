@@ -20,6 +20,7 @@
 namespace Cellon\PaymentCollection\Http;
 
 use Cellon\PaymentCollection\Checkout\Payment_Orchestrator;
+use Cellon\PaymentCollection\Flow_Log;
 
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
@@ -68,6 +69,7 @@ final class Rest_Controller {
 		$operation = (string) $request['operation'];
 		$input     = $this->json( $request );
 
+		Flow_Log::begin( $provider, $operation, $token, $input );
 		switch ( $operation ) {
 			case 'intent':
 				$result = $this->orchestrator->intent( $token, $provider, $input );
@@ -78,6 +80,7 @@ final class Rest_Controller {
 			default:
 				$result = $this->orchestrator->charge_token( $token, $provider, $input );
 		}
+		Flow_Log::end( $operation, $result );
 		return $this->respond( $result );
 	}
 

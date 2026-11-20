@@ -215,6 +215,10 @@
                     intent: function (fields) {
                         var body = withAccount(fields);
                         if (checkout && checkout.customerEmail) body.customer_email = checkout.customerEmail;
+                        // The plan picked on a multi-plan page ('' = default price); the server accepts only the
+                        // quiz result's price_list categories and keeps it for the confirm and the cross sale
+                        var category = checkout && typeof checkout.priceCategory === "function" ? checkout.priceCategory() : null;
+                        if (typeof category === "string") body.ab_testing_price_category = category;
                         return provider(gateway.slug, "intent", body);
                     },
                     confirm: function (fields, accountId) { return provider(gateway.slug, "confirm", withAccount(fields, accountId)); },

@@ -23,7 +23,9 @@ define( 'CELLON_PC_URL', plugin_dir_url( __FILE__ ) );
 
 $cellon_pc_files = [
 	'includes/class-config.php',
+	'includes/class-settings.php',
 	'includes/class-logger.php',
+	'includes/class-flow-log.php',
 	'includes/api/class-api-response.php',
 	'includes/api/class-http-transport.php',
 	'includes/api/interface-payment-api.php',
@@ -56,12 +58,34 @@ foreach ( $cellon_pc_files as $cellon_pc_file ) {
 }
 unset( $cellon_pc_files, $cellon_pc_file );
 
+// The ACF options page (Settings → Payment Collection) registers on acf/init, so hook it now.
+\Cellon\PaymentCollection\Settings::register();
+
 /**
- * The plugin instance. Themes can check `function_exists( 'cellon_payment_collection' )`
- * to know the shared checkout is installed before they skip their old payment markup.
+ * The plugin instance (shortcode, REST routes, render()). Installed is not switched on: themes decide
+ * between their old payment markup and the plugin with cellon_payment_collection_enabled().
  */
 function cellon_payment_collection(): \Cellon\PaymentCollection\Plugin {
 	return \Cellon\PaymentCollection\Plugin::instance();
+}
+
+/**
+ * True when the plugin checkout should render on this page: the plugin is active (this function exists)
+ * and "Use the plugin checkout" is On in Settings → Payment Collection (ACF) for this site and the
+ * current WPML language. Call it after `init`, e.g. in a page template.
+ *
+ * @param string $language WPML language code; '' = the current language.
+ */
+function cellon_payment_collection_enabled( string $language = '' ): bool {
+	return \Cellon\PaymentCollection\Settings::enabled( $language );
+}
+
+/**
+ * True when the plugin checkout is on for every language of this site, i.e. no page of the site still
+ * runs the theme's old payment code. For code shared by all languages, such as old REST routes.
+ */
+function cellon_payment_collection_enabled_everywhere(): bool {
+	return \Cellon\PaymentCollection\Settings::enabled_everywhere();
 }
 
 // After the theme's functions.php, so theme filters for providers and the API adapter apply.

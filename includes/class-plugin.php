@@ -49,6 +49,8 @@ final class Plugin {
 	}
 
 	private function __construct() {
+		Flow_Log::register();
+
 		$this->providers    = new Provider_Registry();
 		$this->api          = $this->make_api();
 		$this->sessions     = new Session_Store();
@@ -57,8 +59,20 @@ final class Plugin {
 		$assets = new Assets( $this->providers );
 		$assets->register();
 		( new Shortcode( new Context_Resolver( $this->providers ), $this->sessions, $assets, $this->providers ) )->register();
+		// The routes stay registered while the switch is off: they only serve checkout tokens a rendered page
+		// created, so a checkout opened before the switch went off can still finish.
 		( new Rest_Controller( $this->orchestrator ) )->register();
-		( new Legacy_Guard() )->register();
+
+		// Guards retire the old handlers for the whole site, so only when no language uses the old code.
+		// On init: the switch is an ACF value, read after WordPress has loaded.
+		add_action(
+			'init',
+			static function () {
+				if ( Settings::enabled_everywhere() ) {
+					( new Legacy_Guard() )->register();
+				}
+			}
+		);
 
 		if ( is_admin() ) {
 			add_action( 'admin_notices', [ $this, 'admin_notice' ] );
@@ -79,9 +93,20 @@ final class Plugin {
 		return $filtered instanceof Payment_Api ? $filtered : $api;
 	}
 
-	/** No settings screen: the API URL, secret and redirect pages are the quiz-funnel-core plugin's. */
+	/**
+	 * The plugin's own setting is the on/off switch (ACF page, Settings → Payment Collection);
+	 * the API URL, secret and redirect pages are the quiz-funnel-core plugin's.
+	 */
 	public function admin_notice(): void {
-		if ( Config::is_configured() || ! current_user_can( 'manage_options' ) ) {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		if ( ! Settings::acf_active() ) {
+			echo '<div class="notice notice-warning"><p>' . esc_html( 'Cellon Payment Collection is switched on and off on an ACF options page. Activate Secure Custom Fields or Advanced Custom Fields PRO; until then the theme\'s own payment code runs.' ) . '</p></div>';
+			return;
+		}
+		// Off = the theme's old code runs, which does not need this plugin's API connection.
+		if ( Config::is_configured() || ! Settings::switched_on() ) {
 			return;
 		}
 		$text = Config::core_active()

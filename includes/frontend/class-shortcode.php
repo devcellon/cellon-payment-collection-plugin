@@ -22,8 +22,9 @@
  *   class          extra classes on the wrapper
  *   switch_on      all | fixable | soft   which failures move to the next provider   default all
  *   last_gateway   fail | retry       failure on the last provider           default fail
- *   max_switches   gateway switches after a declined payment: 1 = one fallback (Stripe → Solidgate), then
- *                  the customer stays on it with the message                         default 1
+ *   max_switches   gateway switches after a declined payment. Empty = every card gateway once
+ *                  (Stripe → BridgerPay → Solidgate); after the last one the box ends (last_gateway).
+ *                  1 = one fallback only                                           default empty
  *                  (a gateway that fails to load is always skipped: that is not a decline)
  *   switch_delay   ms the failed provider stays visible before the next mounts     default 1500
  *   theme_ids      1 | 0              use the themes' element ids (#gpay_btn …)    default 1
@@ -52,6 +53,7 @@ use Cellon\PaymentCollection\Config;
 use Cellon\PaymentCollection\Http\Rest_Controller;
 use Cellon\PaymentCollection\Logger;
 use Cellon\PaymentCollection\Providers\Provider_Registry;
+use Cellon\PaymentCollection\Settings;
 use Cellon\PaymentCollection\Site\Message_Texts;
 use Cellon\PaymentCollection\Site\Site_Profile;
 
@@ -127,6 +129,14 @@ final class Shortcode {
 	 * @param array<string,string>|string $atts
 	 */
 	public function render( $atts ): string {
+		// Switched off (Settings → Payment Collection, or not for this language): render nothing, so a theme
+		// that checks cellon_payment_collection_enabled() shows its own form. Admins see why.
+		if ( ! Settings::enabled() ) {
+			return current_user_can( 'manage_options' )
+				? '<p class="cpc-admin-note"><strong>Cellon Payment Collection is off</strong> for this site or language (Settings → Payment Collection). Visitors see nothing here.</p>'
+				: '';
+		}
+
 		$atts = shortcode_atts(
 			[
 				'flow'         => 'first-sale',
@@ -139,7 +149,7 @@ final class Shortcode {
 				'class'        => '',
 				'switch_on'    => 'all',
 				'last_gateway' => 'fail',
-				'max_switches' => '1',
+				'max_switches' => '',
 				'switch_delay' => '1500',
 				'theme_ids'    => '1',
 				'accept_label' => __( 'Yes, add it', 'cellon-payment-collection' ),

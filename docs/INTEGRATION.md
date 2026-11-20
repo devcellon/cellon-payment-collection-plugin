@@ -27,7 +27,38 @@ There is no build step: the browser code is the plain JavaScript in `assets\js` 
 
 ## 2. Configure (server only)
 
-The plugin has **no settings page** and stores no settings. Everything that is already configured in the **quiz-funnel-core** plugin is read from there, so it exists in one place only:
+### On / off: Settings → Payment Collection
+
+The plugin's only own setting. The checkout runs when **both** hold:
+
+1. the plugin is active on the site (network-activated counts), and
+2. **Use the plugin checkout** is On on the ACF options page **Settings → Payment Collection** (needs Secure Custom Fields or ACF PRO; ACF free has no options pages).
+
+Otherwise `cellon_payment_collection_enabled()` is false: templates run their old payment code, the shortcode renders nothing (admins see a note) and the legacy guards (§8) stay off. The switch is **Off after install** until an admin saves it On.
+
+| Site | What the switch covers |
+| --- | --- |
+| iqpro (single site, WPML) | The whole site, or only the ticked **Languages** (none ticked = every language). |
+| wwiqtest (multisite) | One switch per site of the network; ACF saves options per site. No language field without WPML. |
+| wwpersonality (multisite + WPML) | One switch per site, each with its own WPML **Languages**. |
+
+The page is language-neutral: ACF and ACFML normally save options-page values per WPML language (`options_ja`); this page saves one value (`cellon_payment_collection_enabled`, `cellon_payment_collection_languages`) whatever language the admin bar shows.
+
+For themes:
+
+```php
+cellon_payment_collection_enabled();            // this site, current WPML language (call after init)
+cellon_payment_collection_enabled( 'ja' );      // a given language
+cellon_payment_collection_enabled_everywhere(); // every language: no page of the site still runs old payment code
+```
+
+Code override, e.g. an emergency kill switch in a mu-plugin: `add_filter( 'cellon_payment_collection_enabled', '__return_false' );` (arguments `$enabled, $language`, `$language` = `'*'` for every language).
+
+The REST routes stay registered while the switch is off. They only serve checkout tokens a rendered page created, so a checkout opened before the switch went off can still finish.
+
+### Everything else comes from quiz-funnel-core
+
+Everything that is already configured in the **quiz-funnel-core** plugin is read from there, so it exists in one place only:
 
 | What | Where it comes from |
 | --- | --- |
@@ -62,7 +93,7 @@ add_filter( 'cellon_payment_collection_legacy_guards', fn() => [ 'paypal_checkou
 Repeat these steps on iqpro, then wwiqtest, then wwpersonality, staging first:
 
 1. **Plugins → Add New → Upload Plugin** → `cellon-payment-collection-1.1.0.zip` → Activate. quiz-funnel-core must be active and configured (it already is on all three sites).
-2. No admin notice from Cellon Payment Collection means the Core plugin's API settings were found.
+2. **Settings → Payment Collection** → Use the plugin checkout: On (on WPML sites, tick languages to limit it) → Save. On a multisite network, repeat on each site that should use it. No admin notice from Cellon Payment Collection then means the Core plugin's API settings were found.
 3. Add the language helper to the theme (§7) if the site has languages.
 4. Exclude the payment and checkout pages from page caching and the CDN. Every render carries its own checkout token. The plugin also sends `DONOTCACHEPAGE` and no-cache headers.
 5. Migrate page by page (§8, §9).
@@ -92,7 +123,7 @@ The wrapper around it stays in the template, whichever layout the page uses:
 | `express_layout` | `row` | Wallets (Google Pay / Apple Pay) and PayPal. `row`: side by side, one per row when there is no room for two, a single button full width, two wallets on a row of their own with PayPal under them. `stack`: every button a full-width row. The plugin lays this row out itself, whatever the theme's old `#gpay_btn` / `#paypal-button-container` CSS says. |
 | `switch_on` | `all` | Which failures move to the next provider (§6). |
 | `last_gateway` | `fail` | A failure on the last provider ends the checkout; `retry` keeps its form for another card. |
-| `max_switches` | `1` | Switches after a **declined** payment: one fallback (Stripe → Solidgate), then the customer stays there with the message. A provider that fails to load is always skipped. |
+| `max_switches` | empty | Switches after a **declined** payment. Empty: every card provider once (Stripe → BridgerPay → Solidgate), then `last_gateway` applies. `1`: one fallback only. A provider that fails to load is always skipped. |
 | `switch_delay` | `1500` | ms the failed provider and its message stay visible before the next one mounts. |
 | `theme_ids` | `1` | Use `#gpay_btn`, `#paypal-button-container` and `#paymentResponse`. Only the first checkout on a page gets them. |
 | `locale`, `direction`, `solidgate_locale`, `payment_methods`, `email_error`, `collect_email` | | Language and email settings from the template (§7). |
@@ -128,21 +159,46 @@ From the result it takes:
 | amount | `pricing_info.transactions.first_sale_first_split.amount`, else `first_sale.amount` |
 | price labels | `pricing_info` |
 | pricing fields | `$_SESSION['prc_id']`, `['mdid']`, `['ab_testing_price_category']` |
+| A/B price plans | the categories of `pricing_info.price_list[*].ab_testing_price_category` |
 | provider lists | `payment_provider_details` (sequence) and `direct_payment_provider_details` (or `fixed_payment_provider_details`), from the quiz result or `pricing_info` |
 
 Without either provider list, the legacy `payment_gateways` names are used: SolidGate if listed, else Stripe.
+
+### Pricing fields on every API call
+
+Every first-sale intent, confirm, BLOX charge-token and the plugin's cross sale carry the same fields the Core
+plugin's payment handlers send: `quiz_result_id`, `user_on_iqbooster`, `prc_id`, `pricing_discount: { mdid }`,
+and `ab_testing_price_category` when a plan other than the default is chosen (key left out for `''`, as the Core
+plugin does).
+
+**Multi-plan pages** (wwiqtest `quiz-checkout-v3.php`: trial plan and "Regular price" plan from `price_list`):
+
+- **Where the choice comes from:** when an intent starts, the browser reads the page's
+  `input[name="ab_testing_price_category"]` (the template's hidden `#plan_type_field`; a radio group works too).
+  `''` is the trial / default plan. Another selector: `priceCategoryField` in the checkout config.
+- **What the server accepts:** `''` or a category of this quiz result's `price_list`. Anything else answers 422
+  `Invalid payment data (ab_testing_price_category)` and never reaches the API.
+- **Where it is kept:** on the checkout session, so the confirm, charge-token and cross sale name the same
+  plan; the browser cannot change it on a confirm. It is also written to `$_SESSION['ab_testing_price_category']`,
+  as the Core plugin's intent handlers do, so the Core plugin's cross sale, customer email update
+  (`PUT /customer/update-customer-email`) and the Offers page price label use it.
+- **Pages without the field** (iqpro): nothing is sent from the page; the session's category, if any, is used.
+- **Timing per gateway:** Stripe (deferred) and PayPal create the intent on the Pay click, so the plan picked
+  then is charged. Solidgate and BridgerPay create theirs when the form mounts: a plan switch afterwards needs
+  the checkout to mount again. Stripe's card form and wallet sheet show `checkout.amount` from page load; a page
+  that switches plans must also update that amount (not wired yet).
 
 ## 6. Provider sequence: 1 → 2 → 3
 
 `payment_provider_details` is tried in `order`, lowest first. Only one provider is on screen at a time:
 
 ```
-provider 1 ─ declined ─▶ provider 2 mounts in the same place ─ declined ─▶ stays on provider 2 with the message
+provider 1 ─ declined ─▶ provider 2 mounts in the same place ─ declined ─▶ provider 3 ─ declined ─▶ checkout ends with the message
      (a provider that cannot load is skipped: provider 1 ─ no load ─▶ provider 2 ─ no load ─▶ provider 3)
 ```
 
-- **What counts as a failure:** the SDK cannot load, the API refuses the intent, or the payment is declined, any decline, including card errors and a declined Google Pay / Apple Pay payment (`switch_on="all"`). The customer re-enters the card on the next provider; the email typed in Stripe's field goes with it.
-- **One fallback after a decline** (`max_switches="1"`, the default): a decline on the second card provider keeps the customer there with "declined, use another card", as the themes' old Stripe → Solidgate fallback did. A higher number allows more switches.
+- **What counts as a failure:** the SDK cannot load, the API refuses the intent, or the payment is declined, any decline, including card errors and a declined Google Pay / Apple Pay payment (`switch_on="all"`). Incomplete card fields are not a failure: the form marks them and the customer stays on it. The customer re-enters the card on the next provider; the email typed in Stripe's field goes with it.
+- **Every provider once** (`max_switches` empty, the default): a failed provider is never mounted again. After the last one the checkout ends with "Your payment could not be completed" (`last_gateway="fail"`). `max_switches="1"` restores the old single fallback; `last_gateway="retry"` keeps the last provider's form for another card.
 - **The failed provider's message stays for 1.5 s** (`switch_delay`) before the next one mounts. This replaces the themes' "Do Not Honor → Solidgate" cookie and page reload.
 - **Exception: the outcome is unclear.** If the provider took the payment but the API did not answer, the chain never switches. The server checks with the API first, so a customer is never charged twice.
 - **Direct providers (PayPal)** from `direct_payment_provider_details` sit next to the wallet button and load on their own; a PayPal failure does not affect the card chain.
@@ -286,7 +342,7 @@ Per page:
 **Step 1. Swap the block behind a switch, so rollback is one line.** Wrap the old `.payment-methods` block, from the express row to the end of `#paymentResponse`, **and** the template's payment `<script>` block. Keep the `.pmp` / modal wrapper or the `#iq-report` section, the `.preload` overlay, the price title, `sub_disclaimer_message` and the timers outside.
 
 ```php
-<?php $cpc = function_exists( 'cellon_payment_collection' ) && apply_filters( 'site_use_cellon_payment_collection', true ); ?>
+<?php $cpc = function_exists( 'cellon_payment_collection_enabled' ) && cellon_payment_collection_enabled() && apply_filters( 'site_use_cellon_payment_collection', true ); ?>
 
 <?php if ( $cpc ) : ?>
     <?php echo do_shortcode( '[cellon_payment_checkout flow="first-sale"]' ); ?>
@@ -327,7 +383,9 @@ The PHP above the markup that creates the Solidgate intent (`create_solidgate_in
 
 **Step 5. Rotate the exposed credentials** ([SECURITY-FINDINGS.md](SECURITY-FINDINGS.md)).
 
-Rollback: `add_filter( 'site_use_cellon_payment_collection', '__return_false' );`, and switch the guards off.
+Guards are active only while the plugin is On for **every** language of the site (`cellon_payment_collection_enabled_everywhere()`), because the old handlers have no language.
+
+Rollback: **Settings → Payment Collection** → Off (per site; or untick a language). In code: `add_filter( 'site_use_cellon_payment_collection', '__return_false' );` in the theme, or `cellon_payment_collection_enabled` → false for the plugin. Either way the guards switch off with it.
 
 ## 9. Per-site page map
 
@@ -349,7 +407,7 @@ Line numbers are from the current files and shift as you edit.
 | --- | --- | --- | --- | --- |
 | `page-template/quiz-payment.php` (Quiz Payment) | Payment page dialog | 269–346 | 360–567 | `flow="first-sale"` |
 | `page-template/quiz-checkout-v2.php` (Quiz Checkout V2) | Checkout page, inline | 374–432 | 586–760 | `flow="first-sale"` |
-| `page-template/quiz-checkout-v3.php` (Quiz Checkout V3) | Checkout page, inline, multi-plan | 600–692 / 697–756 | 913–1030 | `flow="first-sale"`, plus `ab_testing_price_category` from the plan picker via `cellon_payment_checkout_context_data` |
+| `page-template/quiz-checkout-v3.php` (Quiz Checkout V3) | Checkout page, inline, multi-plan | 600–692 / 697–756 | 913–1030 | `flow="first-sale"`; the plan picker's hidden `ab_testing_price_category` field is read on each intent (see section 5) |
 | `page-template/quiz-checkout-jp.php` (Quiz Checkout JP) | Checkout page, inline | 527–615 | 875–1097 | `flow="first-sale"` |
 | `page-template/quiz-checkout-abjap.php` (Quiz Checkout ABJAP) | Checkout page, inline | 782–851 | 1066–1180 | `flow="first-sale"` |
 | `page-template/offer.php` (Offer Page) | Cross sale | form 161–226 | 254–367 | `flow="cross-sale"`, `show_skip="0"` when `cross_sale_compulsory` |
@@ -388,6 +446,7 @@ browser   provider 1 of the sequence mounts (and PayPal on its own)
 
 | Hook | Type | Purpose |
 | --- | --- | --- |
+| `cellon_payment_collection_enabled` | filter | `( $enabled, $language )` override the Settings → Payment Collection switch (§2); `$language` `'*'` = every language. |
 | `cellon_payment_checkout_context` | filter | Context array instead of the Core plugin result. |
 | `cellon_payment_checkout_context_data` | filter | Adjust the context data (any source). |
 | `cellon_payment_collection_use_core_results` | filter | `false` = do not call the Core plugin's `get_results()`. |

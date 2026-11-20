@@ -11,7 +11,10 @@
  *        of) the order with PayPal and decides whether it is paid.
  *
  * The browser never gets an OAuth token or app secret, never captures, and nothing it claims about
- * the result (payment_status, charge_id, payer ids) is forwarded.
+ * the result (payment_status, charge_id, payer ids) is forwarded. Both bodies carry the fields of the
+ * reference integration (16types, and the old theme code): payment_method_type on create-order;
+ * payment_method / payment_status / charge_id / item_price / payer ids on confirm. Those are fixed
+ * server-side values, never browser input; without them the API records the PayPal sale as failed.
  *
  * @package Cellon\PaymentCollection
  */
@@ -50,10 +53,32 @@ class Paypal_Provider extends Abstract_Provider {
 		if ( is_wp_error( $body ) ) {
 			return $body;
 		}
-		$fallback            = $context->page_url !== '' ? $context->page_url : home_url( '/' );
-		$body['return_url'] = $this->safe_url( $input['return_url'] ?? '', $fallback );
-		$body['cancel_url'] = $this->safe_url( $input['cancel_url'] ?? '', $fallback );
+		$fallback                    = $context->page_url !== '' ? $context->page_url : home_url( '/' );
+		$body['payment_method_type'] = 'paypal';
+		$body['return_url']          = $this->safe_url( $input['return_url'] ?? '', $fallback );
+		$body['cancel_url']          = $this->safe_url( $input['cancel_url'] ?? '', $fallback );
 		return $body;
+	}
+
+	/**
+	 * The confirm body of the reference integration. The browser only sends the approved order id
+	 * (confirm_fields); everything added here is a constant. The API still captures the order with
+	 * PayPal itself (server-side capture: empty charge_id / payer ids, as 16types sends them).
+	 */
+	public function build_confirm_body( Checkout_Context $context, array $input, ?int $account_id ) {
+		$body = parent::build_confirm_body( $context, $input, $account_id );
+		if ( is_wp_error( $body ) ) {
+			return $body;
+		}
+		return $body + [
+			'payment_method'        => 'paypal',
+			'payment_status'        => 'paid',
+			'charge_id'             => '',
+			'item_price'            => 0,
+			'paypal_customer_email' => '',
+			'payment_method_id'     => '',
+			'paypal_customer_id'    => '',
+		];
 	}
 
 	public function api_routes(): array {
