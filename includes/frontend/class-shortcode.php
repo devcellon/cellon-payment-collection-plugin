@@ -271,8 +271,6 @@ final class Shortcode {
 				'collectEmail' => (bool) $profile['collect_email'],
 				// "Processing…" notice line while paying; the pay button shows the processing label either way
 				'processingNotice'   => (bool) ( $profile['processing_notice'] ?? true ),
-				'emailNonce'   => $profile['collect_email'] ? wp_create_nonce( 'email_info_frm_nonce' ) : '',
-				'ajaxUrl'      => admin_url( 'admin-ajax.php' ),
 				'events'       => $profile['events'],
 				'labels'       => $labels,
 				'preloader'    => $profile['preloader'],

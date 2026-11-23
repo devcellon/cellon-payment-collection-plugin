@@ -22,6 +22,23 @@ class Http_Transport {
 	 * @param array<string,mixed> $body JSON body.
 	 */
 	public function post( string $path, array $body ): Api_Response {
+		return $this->send( 'POST', $path, $body );
+	}
+
+	/**
+	 * Same as post(), with the PUT verb (customer routes, e.g. "/customer/update-customer-email").
+	 *
+	 * @param array<string,mixed> $body JSON body.
+	 */
+	public function put( string $path, array $body ): Api_Response {
+		return $this->send( 'PUT', $path, $body );
+	}
+
+	/**
+	 * @param string              $method POST or PUT.
+	 * @param array<string,mixed> $body   JSON body.
+	 */
+	private function send( string $method, string $path, array $body ): Api_Response {
 		$api = Config::api();
 		if ( $api['url'] === '' || $api['token'] === '' ) {
 			return Api_Response::local_error( 500, __( 'Payments are not configured on this site.', 'cellon-payment-collection' ), 'not_configured' );
@@ -45,9 +62,10 @@ class Http_Transport {
 		];
 
 		$started  = microtime( true );
-		$response = wp_remote_post(
+		$response = wp_remote_request(
 			$api['url'] . '/' . ltrim( $path, '/' ),
 			[
+				'method'      => $method,
 				'timeout'     => $api['timeout'],
 				'redirection' => 0,
 				'headers'     => (array) apply_filters( 'cellon_payment_collection_api_headers', $headers, $path ),

@@ -180,8 +180,8 @@ plugin does).
   `Invalid payment data (ab_testing_price_category)` and never reaches the API.
 - **Where it is kept:** on the checkout session, so the confirm, charge-token and cross sale name the same
   plan; the browser cannot change it on a confirm. It is also written to `$_SESSION['ab_testing_price_category']`,
-  as the Core plugin's intent handlers do, so the Core plugin's cross sale, customer email update
-  (`PUT /customer/update-customer-email`) and the Offers page price label use it.
+  as the Core plugin's intent handlers do, so the Core plugin's cross sale, the customer email update
+  (`PUT /customer/update-customer-email`, §7) and the Offers page price label use it.
 - **Pages without the field** (iqpro): nothing is sent from the page; the session's category, if any, is used.
 - **Timing per gateway:** Stripe (deferred) and PayPal create the intent on the Pay click, so the plan picked
   then is charged. Solidgate and BridgerPay create theirs when the form mounts: a plan switch afterwards needs
@@ -294,11 +294,19 @@ When collecting:
 - **Stripe and BridgerPay BLOX:** an email field shows above the card form. It is validated before paying, with the message in the page's language, and sent to Stripe as the billing email.
 - **Solidgate:** its own form shows the email field, as today. The plugin reads the address from Solidgate's success event on the server.
 - **After the API records the sale:**
-  1. The address goes to the Core plugin's `submit_email` action, with the same nonce, so it updates the customer through `/customer/update-customer-email` and the session as before.
-  2. The `user_email` cookie is set (2 h).
-  3. `Chargeblast.identify(email)` runs.
-  4. `dataLayer` gets `autoEvent / funnel / email_insert`, and `analytics.track('email_submitted')` fires.
-  5. Only then does the redirect run, waiting at most 2.5 s.
+  1. The `user_email` cookie is set (2 h).
+  2. `Chargeblast.identify(email)` runs.
+  3. The address goes to this plugin's `POST /wp-json/cellon-payment/v1/checkouts/{token}/email`. The server calls
+     `PUT /customer/update-customer-email` itself (`includes/api/class-customer-api.php`) with the same body the
+     Core plugin's `submit_email` sends: `quiz_result_id`, `email`, `variant_type` (cookie `wp_ab_visitor_variant`)
+     and, on multi-plan pages, `ab_testing_price_category` (as wwiqtest's Core). It also sets
+     `$_SESSION['user_submitted_email']`, as that handler does. The plugin no longer calls `submit_email`.
+  4. Once the API saved it: `dataLayer` gets `autoEvent / funnel / email_insert`, and `analytics.track('email_submitted')` fires.
+  5. Then the redirect runs, waiting at most 2.5 s for steps 3–4. A failed update never blocks the redirect.
+
+  The server takes the quiz result from the checkout session (not from the browser), accepts the call only on a
+  paid first-sale checkout that collects the email, and does not call the API twice for the same address.
+  Hooks: `cellon_payment_collection_customer_email_body`, `cellon_payment_collection_customer_email_route`.
 
 ### Events
 
@@ -379,7 +387,7 @@ The PHP above the markup that creates the Solidgate intent (`create_solidgate_in
 | `cross_sale_payment` | Every Offer Page uses `flow="cross-sale"`. |
 | `/wp-json/paypal/v1/token` (iqpro) | iqpro's PayPal no longer uses `paypal-checkout.js`. As early as possible. |
 
-`submit_email` stays: the plugin uses it.
+`submit_email` (Core plugin) stays for the templates still on the old theme code (`google-pay.php`, `quiz-checkout-iq.php`, `new-checkout-payment.php`, the email form in `custom.js`). The plugin's checkout no longer uses it (§7).
 
 **Step 5. Rotate the exposed credentials** ([SECURITY-FINDINGS.md](SECURITY-FINDINGS.md)).
 
@@ -437,7 +445,7 @@ browser   provider 1 of the sequence mounts (and PayPal on its own)
           body = server-side context + allow-listed provider fields → API intent route
  pay      the customer pays in the provider's SDK (Stripe, Solidgate form, PayPal approval, BridgerPay)
  confirm  POST …/providers/{slug}/confirm  → API confirm route (PayPal: API captures) → paid
-          → events, email (submit_email), redirect to the API's redirect_page
+          → events, email (POST …/email → PUT /customer/update-customer-email), redirect to the API's redirect_page
  fail     next provider mounts in place (1 → 2 → 3), after 1.5 s
  unclear  never switch; POST …/status asks the API whether the sale was recorded
 ```

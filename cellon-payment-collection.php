@@ -31,6 +31,7 @@ $cellon_pc_files = [
 	'includes/api/interface-payment-api.php',
 	'includes/api/class-current-payment-api.php',
 	'includes/api/class-common-payment-api.php',
+	'includes/api/class-customer-api.php',
 	'includes/providers/interface-provider.php',
 	'includes/providers/abstract-provider.php',
 	'includes/providers/class-stripe-provider.php',

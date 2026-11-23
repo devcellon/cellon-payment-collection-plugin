@@ -9,6 +9,7 @@ namespace Cellon\PaymentCollection;
 
 use Cellon\PaymentCollection\Api\Common_Payment_Api;
 use Cellon\PaymentCollection\Api\Current_Payment_Api;
+use Cellon\PaymentCollection\Api\Customer_Api;
 use Cellon\PaymentCollection\Api\Http_Transport;
 use Cellon\PaymentCollection\Api\Payment_Api;
 use Cellon\PaymentCollection\Checkout\Context_Resolver;
@@ -51,10 +52,11 @@ final class Plugin {
 	private function __construct() {
 		Flow_Log::register();
 
+		$http               = new Http_Transport();
 		$this->providers    = new Provider_Registry();
-		$this->api          = $this->make_api();
+		$this->api          = $this->make_api( $http );
 		$this->sessions     = new Session_Store();
-		$this->orchestrator = new Payment_Orchestrator( $this->api, $this->providers, $this->sessions );
+		$this->orchestrator = new Payment_Orchestrator( $this->api, $this->providers, $this->sessions, new Customer_Api( $http ) );
 
 		$assets = new Assets( $this->providers );
 		$assets->register();
@@ -84,8 +86,7 @@ final class Plugin {
 	 *
 	 *   add_filter( 'cellon_payment_collection_payment_api', fn( $api, $http ) => new My_V2_Payment_Api( $http ), 10, 2 );
 	 */
-	private function make_api(): Payment_Api {
-		$http   = new Http_Transport();
+	private function make_api( Http_Transport $http ): Payment_Api {
 		$routes = $this->providers->api_routes();
 		$api    = Config::api_adapter() === Config::API_COMMON ? new Common_Payment_Api( $http, $routes ) : new Current_Payment_Api( $http, $routes );
 

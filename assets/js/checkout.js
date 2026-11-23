@@ -97,21 +97,19 @@
         };
     }
 
-    /* Core plugin's submit_email (dummy-email A/B test), with the themes' cookie / Chargeblast / GTM events. */
-    function submitCollectedEmail(site, quizResultId, email) {
-        if (!email || !EMAIL_RE.test(email) || !site.emailNonce) return Promise.resolve();
+    /* Dummy-email checkouts, after the first sale: this plugin's POST …/checkouts/<token>/email saves the address
+     * on the customer (PUT /customer/update-customer-email, as the Core plugin's submit_email did), with the
+     * themes' cookie / Chargeblast before the call and the GTM / analytics events once it is saved. */
+    function submitCollectedEmail(site, client, email) {
+        if (!email || !EMAIL_RE.test(email) || !client) return Promise.resolve();
         document.cookie = "user_email=" + encodeURIComponent(email) + "; expires=" + new Date(Date.now() + 2 * 60 * 60 * 1000).toUTCString() + "; path=/";
         if (site.events && site.events.chargeblast && typeof window.Chargeblast !== "undefined") {
             try { window.Chargeblast.identify(email); } catch (e) { /* ignore */ }
         }
-        var body = new URLSearchParams({ action: "submit_email", email: email, quiz_data_id: quizResultId, email_info_frm_nonce: site.emailNonce });
-        var request = fetch(site.ajaxUrl, { method: "POST", credentials: "same-origin", body: body })
-            .then(function (response) { return response.json(); })
-            .then(function (json) {
-                if (json && json.success === true) {
-                    push("autoEvent", { eventCategory: "funnel", eventAction: "email_insert", type: { email: email } });
-                    try { if (window.analytics) window.analytics.track("email_submitted", {}, "click"); } catch (e) { /* ignore */ }
-                }
+        var request = client.post("/email", { email: email })
+            .then(function () {
+                push("autoEvent", { eventCategory: "funnel", eventAction: "email_insert", type: { email: email } });
+                try { if (window.analytics) window.analytics.track("email_submitted", {}, "click"); } catch (e) { /* ignore */ }
             })
             .catch(function () { /* the payment is recorded; the email update is best effort, as before */ });
         // Do not hold the redirect longer than 2.5 s
@@ -309,7 +307,8 @@
         }
         if (wallets && window.MutationObserver) new MutationObserver(syncLayout).observe(wallets, { childList: true, attributes: true, attributeFilter: ["hidden", "data-wallets"] });
 
-        function succeed(result) {
+        /** client: REST client of the checkout that was paid (a redirect return confirms on its own checkout). */
+        function succeed(result, client) {
             if (done) return;
             done = true;
             var data = (result && result.data) || {};
@@ -319,7 +318,7 @@
             say(data.message || labels.success, "success");
             preloader(site, true);
             var email = data.collected_email || (EMAIL_RE.test(typedEmail()) ? typedEmail() : "");
-            var next = site.collectEmail && email ? submitCollectedEmail(site, config.quizResultId, email) : Promise.resolve();
+            var next = site.collectEmail && email ? submitCollectedEmail(site, client || rest, email) : Promise.resolve();
             next.then(function () {
                 var event = emit(root, "success", result);
                 if (!event.defaultPrevented && url) window.location.href = url;
@@ -463,8 +462,9 @@
         if (resume && resume.rest && resume.status !== "failed" && resumeDef && resumeDef.resume) {
             say(messages.processing, "success");
             preloader(site, true);
-            CP.restClient(resume.rest).provider(resume.provider, "confirm", resumeDef.resume.body(resume.reference)).then(function (data) {
-                succeed({ gateway: resume.provider, accountId: null, data: data });
+            var resumeClient = CP.restClient(resume.rest);
+            resumeClient.provider(resume.provider, "confirm", resumeDef.resume.body(resume.reference)).then(function (data) {
+                succeed({ gateway: resume.provider, accountId: null, data: data }, resumeClient);
             }).catch(function (error) {
                 preloader(site, false);
                 analytics.failed(resume.provider);

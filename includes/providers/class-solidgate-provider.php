@@ -44,7 +44,7 @@ class Solidgate_Provider extends Abstract_Provider {
 
 	/**
 	 * The form's own email field (themes' solidgate.js: success event order.customer_email). Returned to
-	 * the browser, which sends it to the Core plugin's submit_email like the themes did.
+	 * the browser, which sends it to this plugin's …/checkouts/<token>/email (PUT /customer/update-customer-email).
 	 */
 	public function collected_email( array $input ): string {
 		$obj = isset( $input['payment_obj'] ) && is_array( $input['payment_obj'] ) ? $input['payment_obj'] : [];

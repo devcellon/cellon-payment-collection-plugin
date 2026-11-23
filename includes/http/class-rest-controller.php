@@ -8,6 +8,8 @@
  *   POST /checkouts/{token}/providers/{provider}/charge-token  BridgerPay BLOX token charge
  *   POST /checkouts/{token}/status                             was an unclear payment recorded?
  *   POST /checkouts/{token}/cross-sale                         { "action": "accept" | "skip" }
+ *   POST /checkouts/{token}/email                              { "email" } after a paid first sale (dummy-email
+ *                                                              checkouts): PUT /customer/update-customer-email
  *
  * PayPal: /providers/paypal/intent is the create-order endpoint, /providers/paypal/confirm the confirm
  * endpoint; the body of the confirm is { paypal_order_id, payment_provider_detail_id } and nothing else is used.
@@ -61,6 +63,12 @@ final class Rest_Controller {
 			'callback'            => [ $this, 'cross_sale' ],
 			'permission_callback' => [ $this, 'same_origin' ],
 		] );
+
+		register_rest_route( self::NAMESPACE_V1, '/checkouts/' . $token . '/email', [
+			'methods'             => 'POST',
+			'callback'            => [ $this, 'email' ],
+			'permission_callback' => [ $this, 'same_origin' ],
+		] );
 	}
 
 	public function provider_step( \WP_REST_Request $request ): \WP_REST_Response {
@@ -92,6 +100,13 @@ final class Rest_Controller {
 		$input  = $this->json( $request );
 		$action = isset( $input['action'] ) && $input['action'] === 'skip' ? 'skip' : 'accept';
 		return $this->respond( $this->orchestrator->cross_sale( (string) $request['token'], $action ) );
+	}
+
+	public function email( \WP_REST_Request $request ): \WP_REST_Response {
+		$input  = $this->json( $request );
+		$result = $this->orchestrator->collect_email( (string) $request['token'], $input['email'] ?? '' );
+		Flow_Log::end( 'email', $result );
+		return $this->respond( $result );
 	}
 
 	/**

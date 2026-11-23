@@ -56,6 +56,9 @@ final class Checkout_Session {
 	/** @var int Intent calls made, capped against card testing. */
 	public $intent_count = 0;
 
+	/** @var string Email saved on the customer after the first sale (PUT /customer/update-customer-email), '' until then. */
+	public $email_saved = '';
+
 	public function context(): Checkout_Context {
 		return Checkout_Context::restore( $this->context );
 	}

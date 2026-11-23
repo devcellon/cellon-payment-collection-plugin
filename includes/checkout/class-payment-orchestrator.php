@@ -23,6 +23,7 @@
 namespace Cellon\PaymentCollection\Checkout;
 
 use Cellon\PaymentCollection\Api\Api_Response;
+use Cellon\PaymentCollection\Api\Customer_Api;
 use Cellon\PaymentCollection\Api\Payment_Api;
 use Cellon\PaymentCollection\Flow_Log;
 use Cellon\PaymentCollection\Logger;
@@ -44,13 +45,17 @@ final class Payment_Orchestrator {
 	/** @var Session_Store */
 	private $store;
 
+	/** @var Customer_Api */
+	private $customers;
+
 	/** @var string redirect_page of the last quiz-result check. */
 	private $last_redirect_page = '';
 
-	public function __construct( Payment_Api $api, Provider_Registry $registry, Session_Store $store ) {
-		$this->api      = $api;
-		$this->registry = $registry;
-		$this->store    = $store;
+	public function __construct( Payment_Api $api, Provider_Registry $registry, Session_Store $store, Customer_Api $customers ) {
+		$this->api       = $api;
+		$this->registry  = $registry;
+		$this->store     = $store;
+		$this->customers = $customers;
 	}
 
 	public function api(): Payment_Api {
@@ -275,6 +280,67 @@ final class Payment_Orchestrator {
 				return $this->ok( [ 'paid' => false ] );
 			}
 			return $this->ok( [ 'paid' => null ] );
+		} finally {
+			$this->store->unlock( $token );
+		}
+	}
+
+	/* -------------------------------------------------------- customer email */
+
+	/**
+	 * Dummy-email checkouts: after the first sale, save the address the customer typed (or the provider's own
+	 * form collected) on the customer. Replaces the Core plugin's `submit_email` admin-ajax call with the same
+	 * API call (Customer_Api), so it no longer lives in two places. Stricter than that handler: the quiz result
+	 * comes from the checkout session (never from the browser), and only a paid first-sale checkout that
+	 * collects the email may call it. A repeat with the address already saved answers "saved" without a
+	 * second API call.
+	 *
+	 * @param mixed $email Browser value.
+	 * @return array{status:int, body:array<string,mixed>}
+	 */
+	public function collect_email( string $token, $email ): array {
+		$email = is_string( $email ) ? sanitize_email( trim( $email ) ) : '';
+		if ( $email === '' || ! is_email( $email ) ) {
+			return $this->error( 422, 'invalid_email', __( 'A valid email address is required.', 'cellon-payment-collection' ) );
+		}
+		if ( ! $this->store->lock( $token, 3.0 ) ) {
+			return $this->error( 409, 'payment_in_progress', __( 'A payment is being processed. Please wait.', 'cellon-payment-collection' ) );
+		}
+		try {
+			$session = $this->store->load( $token );
+			if ( ! $session ) {
+				return $this->expired();
+			}
+			$context = $session->context();
+			Flow_Log::begin( (string) ( $session->result['gateway'] ?? '' ), 'email', $token, [ 'email' => $email ] );
+			Flow_Log::quiz( (string) $context->quiz_result_id );
+
+			if ( $context->flow !== 'first-sale' || empty( $context->site['collect_email'] ) ) {
+				return $this->error( 403, 'email_not_collected', __( 'This checkout does not collect an email.', 'cellon-payment-collection' ) );
+			}
+			if ( ! $session->is_paid() ) {
+				return $this->error( 409, 'not_paid', __( 'The email is saved after the payment.', 'cellon-payment-collection' ) );
+			}
+			if ( $session->email_saved !== '' && strcasecmp( $session->email_saved, $email ) === 0 ) {
+				return $this->ok( [ 'saved' => true ] );
+			}
+
+			// As the Core plugin's handler, before the API call: the Customer Details page reads it to know the
+			// customer is no longer a dummy-email one.
+			if ( session_status() === PHP_SESSION_ACTIVE ) {
+				$_SESSION['user_submitted_email'] = $email;
+			}
+
+			$plan     = $context->extra['ab_testing_price_category'] ?? null;
+			$response = $this->customers->update_email( $context->quiz_result_id, $email, is_scalar( $plan ) ? (string) $plan : null );
+			if ( ! $response->is_success() ) {
+				Logger::log( 'email.failed', [ 'status' => $response->status, 'message' => $response->message ] );
+				return $this->pass( $response );
+			}
+
+			$session->email_saved = $email;
+			$this->store->save( $session );
+			return $this->ok( [ 'saved' => true ] );
 		} finally {
 			$this->store->unlock( $token );
 		}

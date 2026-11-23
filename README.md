@@ -16,7 +16,7 @@ The shortcode shows the payment providers the Cellon API configures for the quiz
 Each site keeps its current behaviour, ported from the themes' `stripe-new.js` / `stripe_new.js`, `solidgate.js` and `paypal-*.js` ([INTEGRATION.md §7](docs/INTEGRATION.md#7-site-behaviour-carried-over-from-the-themes)):
 
 - languages, passed by each template as shortcode attributes (the plugin has no language rules of its own);
-- dummy-email collection through the Core plugin's `submit_email`;
+- dummy-email collection, saved by the plugin itself after the first sale (`PUT /customer/update-customer-email`, same body as the Core plugin's `submit_email`);
 - `dataLayer`, `analytics` and `gtag` events;
 - ACF labels;
 - the theme markup and classes, in the Quiz Payment dialog or inline on the checkout page.
@@ -46,7 +46,8 @@ cellon-payment-collection.php        bootstrap
 includes/
   class-config.php                   server-only config, read from quiz-funnel-core: API URL, secret, x-host, client IP
   api/                               Payment_Api interface + Current_Payment_Api (per-provider routes)
-                                     + Common_Payment_Api (initiate/confirm) + Http_Transport
+                                     + Common_Payment_Api (initiate/confirm) + Http_Transport (POST / PUT)
+                                     + Customer_Api (customer email update after the first sale)
   providers/                         one class per provider (Stripe, Solidgate, PayPal, BridgerPay) + registry:
                                      field allow-lists, body building, intent ↔ confirm references, its API routes,
                                      its browser file and options, its analytics names, an email its form collected
