@@ -106,6 +106,17 @@ final class Session_Store {
 		} while ( true );
 	}
 
+	/**
+	 * Keeps a held lock from looking stale for $seconds more: a payment that waits on the API without a time limit
+	 * (one-call payments) is still running, not a process that died. A lock counts as stale LOCK_STALE seconds after
+	 * its timestamp, so the timestamp moves ahead.
+	 */
+	public function hold_lock( string $token, int $seconds ): void {
+		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		$wpdb->update( $wpdb->options, [ 'option_value' => (string) ( time() + max( 0, $seconds ) ) ], [ 'option_name' => self::LOCK_PREFIX . $token ] );
+	}
+
 	public function unlock( string $token ): void {
 		global $wpdb;
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery

@@ -57,4 +57,9 @@ class Common_Payment_Api extends Current_Payment_Api {
 		$body['payment_provider_slug'] = $provider;
 		return $this->http->post( $this->common_routes['confirm'], $body );
 	}
+
+	public function pay( string $provider, array $body, int $timeout ): Api_Response {
+		$body['payment_provider_slug'] = $provider;
+		return $this->http->post( $this->common_routes['initiate'], $body, $timeout );
+	}
 }

@@ -6,6 +6,8 @@
  *   POST /checkouts/{token}/providers/{provider}/intent        create intent / order / session
  *   POST /checkouts/{token}/providers/{provider}/confirm       confirm with the API (PayPal: API captures)
  *   POST /checkouts/{token}/providers/{provider}/charge-token  BridgerPay BLOX token charge
+ *   POST /checkouts/{token}/providers/{provider}/pay           a payment the API runs in one call (Evervault: the
+ *                                                              encrypted card or wallet token in, the outcome out)
  *   POST /checkouts/{token}/status                             was an unclear payment recorded?
  *   POST /checkouts/{token}/cross-sale                         { "action": "accept" | "skip" }
  *   POST /checkouts/{token}/email                              { "email" } after a paid first sale (dummy-email
@@ -46,7 +48,7 @@ final class Rest_Controller {
 	public function routes(): void {
 		$token = '(?P<token>[a-f0-9]{64})';
 
-		register_rest_route( self::NAMESPACE_V1, '/checkouts/' . $token . '/providers/(?P<provider>[a-z0-9_-]{2,32})/(?P<operation>intent|confirm|charge-token)', [
+		register_rest_route( self::NAMESPACE_V1, '/checkouts/' . $token . '/providers/(?P<provider>[a-z0-9_-]{2,32})/(?P<operation>intent|confirm|charge-token|pay|3ds-session)', [
 			'methods'             => 'POST',
 			'callback'            => [ $this, 'provider_step' ],
 			'permission_callback' => [ $this, 'same_origin' ],
@@ -84,6 +86,12 @@ final class Rest_Controller {
 				break;
 			case 'confirm':
 				$result = $this->orchestrator->confirm( $token, $provider, $input );
+				break;
+			case 'pay':
+				$result = $this->orchestrator->pay( $token, $provider, $input );
+				break;
+			case '3ds-session':
+				$result = $this->orchestrator->three_ds_session( $token, $provider, $input );
 				break;
 			default:
 				$result = $this->orchestrator->charge_token( $token, $provider, $input );

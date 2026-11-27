@@ -59,6 +59,12 @@ final class Checkout_Session {
 	/** @var string Email saved on the customer after the first sale (PUT /customer/update-customer-email), '' until then. */
 	public $email_saved = '';
 
+	/**
+	 * @var array<string,mixed> The 3D Secure session this checkout started last (Payment_Orchestrator::three_ds_session()):
+	 * session_id and a fingerprint of the payment body it was started for. Used by the next payment only, then cleared.
+	 */
+	public $three_ds = [];
+
 	public function context(): Checkout_Context {
 		return Checkout_Context::restore( $this->context );
 	}

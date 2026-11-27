@@ -279,12 +279,56 @@
         var wallets = ids.wallets ? document.getElementById(ids.wallets) : null;
         var line = root.querySelector(".cpc-line");
         var walletClass = "";
+
+        // card_reveal: the card form opens with its own button and closes with its back link; the express row
+        // hides while it is open, until a card payment fails: then PayPal and the wallets show again above the
+        // card form, so the customer can pay another way without finding the back link. Slides as the themes'
+        // checkout pages did when jQuery is there.
+        var reveal = root.querySelector(".cpc-reveal");
+        var card = root.querySelector(".cpc-card");
+        var cardOpen = false;
+        var cardFailed = false;
+        function slide(el, show) {
+            var $ = window.jQuery;
+            if ($ && $.fn && $.fn.slideDown) {
+                $(el).stop(true, true); // runs a pending slide's callback first
+                if (show) {
+                    el.hidden = false;
+                    $(el).hide().slideDown(300);
+                } else {
+                    $(el).slideUp(300, function () { el.hidden = true; });
+                }
+                return;
+            }
+            el.hidden = !show;
+            el.style.display = show ? "block" : "none"; // beats a theme rule that keeps #paymentFrm closed
+        }
+        function openCard(open) {
+            if (open === cardOpen) return;
+            cardOpen = open;
+            slide(card, open);
+            slide(reveal, !open);
+            syncLayout();
+        }
+        if (reveal && card) {
+            reveal.querySelector("button").addEventListener("click", function () { openCard(true); });
+            var back = card.querySelector(".cpc-back");
+            if (back) {
+                back.addEventListener("click", function () { openCard(false); });
+                back.addEventListener("keydown", function (event) {
+                    if (event.key !== "Enter" && event.key !== " ") return;
+                    event.preventDefault();
+                    openCard(false);
+                });
+            }
+        }
+
         function syncLayout() {
             var walletShown = !!(wallets && !wallets.hidden && wallets.children.length);
             var directShown = !!root.querySelector(".cpc-box--direct:not([hidden])");
             if (wallets) wallets.style.display = walletShown ? "" : "none";
             if (express) {
-                express.hidden = !walletShown && !directShown;
+                express.hidden = (cardOpen && !cardFailed) || (!walletShown && !directShown);
                 express.classList.toggle("cpc-express--single", !(walletShown && directShown));
             }
             var chainBox = root.querySelector(".cpc-box--chain");
@@ -382,6 +426,9 @@
 
                 var text = state.notice && state.notice.message;
                 if (text && text !== previous.notice) say(text, state.notice.decision === "verify" ? "success" : "error");
+                // A card payment the customer started failed (declined, could not be processed): show the other ways
+                // to pay again. Not while its outcome is being checked ("do not pay again")
+                if (!isDirect && text && state.notice.decision !== "verify") cardFailed = true;
                 if (!text && previous.notice && state.status === "ready") say("");
 
                 if (state.status === "processing" && previous.status !== "processing") {

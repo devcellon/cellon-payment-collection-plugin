@@ -42,8 +42,12 @@ class Current_Payment_Api implements Payment_Api {
 	public static function shared_routes(): array {
 		return [
 			'_shared' => [
-				'cross_sale'  => '/payment/cross-sale/payments/confirm',
-				'quiz_result' => '/questions/results',
+				'cross_sale'       => '/payment/cross-sale/payments/confirm',
+				'quiz_result'      => '/questions/results',
+				// One-call payments (Evervault) exist only on the common first-sale route, whichever adapter is active
+				'pay'              => '/payment/first-sale/payments/initiate',
+				// Evervault 3D Secure, step 1 of its card payment (nothing charged)
+				'three_ds_session' => '/payment/first-sale/payments/3ds-session',
 			],
 		];
 	}
@@ -53,6 +57,9 @@ class Current_Payment_Api implements Payment_Api {
 	}
 
 	public function supports( string $provider, string $operation ): bool {
+		if ( $operation === 'pay' || $operation === 'three_ds_session' ) {
+			return ( $this->routes['_shared'][ $operation ] ?? '' ) !== '';
+		}
 		return isset( $this->routes[ $provider ][ $operation ] ) && $this->routes[ $provider ][ $operation ] !== '';
 	}
 
@@ -67,6 +74,21 @@ class Current_Payment_Api implements Payment_Api {
 	public function charge_token( string $provider, array $body ): Api_Response {
 		// The BLOX route belongs to the common API generation and accepts the account keys.
 		return $this->call( $provider, 'charge_token', $body );
+	}
+
+	/** The common route, with the common keys (payment_provider_slug, the account, customer_email) kept. */
+	public function pay( string $provider, array $body, int $timeout ): Api_Response {
+		$body['payment_provider_slug'] = $provider;
+		return $this->http->post( $this->routes['_shared']['pay'], $body, $timeout );
+	}
+
+	/** The common 3ds-session route, with the same keys as pay(). The usual time limit: nothing is charged. */
+	public function three_ds_session( string $provider, array $body ): Api_Response {
+		if ( ! $this->supports( $provider, 'three_ds_session' ) ) {
+			return Api_Response::local_error( 404, __( 'This payment method is not available.', 'cellon-payment-collection' ), 'route_not_available' );
+		}
+		$body['payment_provider_slug'] = $provider;
+		return $this->http->post( $this->routes['_shared']['three_ds_session'], $body );
 	}
 
 	public function confirm_cross_sale( array $body ): Api_Response {

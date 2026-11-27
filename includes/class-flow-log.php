@@ -42,8 +42,8 @@ final class Flow_Log {
 
 	const DIR = 'cellon-payment-logs';
 
-	/** Keys whose values never reach the file (headers and bodies, any depth, case-insensitive). */
-	const REDACT = [ 'authorization', 'api_token', 'token', 'secret', 'client_secret', 'signature', 'paymentintent', 'cashier_token', 'credit_card_token', 'encrypted_cvv', 'payment_obj', 'nonce', '_wpnonce', 'security' ];
+	/** Keys whose values never reach the file (headers and bodies, any depth, case-insensitive). `card`, `wallet`, `network_token`, `cryptogram`: encrypted card / wallet data (Evervault). */
+	const REDACT = [ 'authorization', 'api_token', 'token', 'secret', 'client_secret', 'signature', 'paymentintent', 'cashier_token', 'credit_card_token', 'encrypted_cvv', 'payment_obj', 'card', 'wallet', 'network_token', 'cryptogram', 'nonce', '_wpnonce', 'security' ];
 
 	/** API calls held per quiz result before its flow starts. */
 	const PRE_LIMIT = 8;

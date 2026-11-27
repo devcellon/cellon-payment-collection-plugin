@@ -31,13 +31,15 @@ Every payment call runs on the server. The browser talks only to this plugin's R
 | Solidgate (card form, wallets) | Supported |
 | PayPal (server-side create-order and confirm) | Supported. Needs the API to capture on every site: [contract P1](docs/BACKEND-CONTRACTS.md) |
 | BridgerPay (widget, BLOX) | Supported, on by default. Needs the API's BridgerPay routes; without them the sequence moves on. |
+| Evervault (its own card form, Apple Pay and Google Pay; one API call runs the payment on the account's processors, no time limit) | Card: supported, on by default. Apple Pay / Google Pay: the button shows (the API sends the merchant id); paying with it waits for the API to accept the wallet body ([contract E2](docs/BACKEND-CONTRACTS.md)). The page takes the first sale only: the cross-sale and renewals are charged by the backend. 3D Secure (card form): built to the funnel contract v0.1 (3DS session → bank's window → charge); it pays without 3DS until the API's `3ds-session` route is deployed and switched on (E3). |
 | BlueSnap, Tranzila | Out of scope (not required now). Skipped if listed. |
 
 ## Documents
 
 - [docs/INTEGRATION.md](docs/INTEGRATION.md): configuration, installation per site, the shortcode, the context hook, styling, and a migration that never runs two payment handlers for one checkout.
 - [docs/BACKEND-CONTRACTS.md](docs/BACKEND-CONTRACTS.md): what the Cellon API must provide or change. Covers PayPal capture, provider fields, Solidgate verification, BlueSnap, Tranzila and BridgerPay.
-- [docs/SECURITY-FINDINGS.md](docs/SECURITY-FINDINGS.md): credentials found in theme and plugin source that must be rotated, and unsafe endpoints to retire.
+- [docs/SECURITY-FINDINGS.md](docs/SECURITY-FINDINGS.md): credentials found in theme and plugin source that must be 
+rotated, and unsafe endpoints to retire.
 
 ## Layout
 
@@ -48,9 +50,10 @@ includes/
   api/                               Payment_Api interface + Current_Payment_Api (per-provider routes)
                                      + Common_Payment_Api (initiate/confirm) + Http_Transport (POST / PUT)
                                      + Customer_Api (customer email update after the first sale)
-  providers/                         one class per provider (Stripe, Solidgate, PayPal, BridgerPay) + registry:
+  providers/                         one class per provider (Stripe, Solidgate, PayPal, BridgerPay, Evervault) + registry:
                                      field allow-lists, body building, intent ↔ confirm references, its API routes,
-                                     its browser file and options, its analytics names, an email its form collected
+                                     its browser file and options, its analytics names, an email its form collected;
+                                     One_Call_Provider for a payment the API runs in one call (Evervault)
   checkout/                          Provider_Config (normalizes provider lists), Checkout_Context + Context_Resolver
                                      (hook, then session), Checkout_Session + Session_Store (state, atomic lock),
                                      Payment_Orchestrator (server rules against duplicate charges)
@@ -69,7 +72,7 @@ tools/package.ps1                    makes the installable zip
 
 ### Browser code
 
-The browser code is this plugin's own plain JavaScript (ES2017). There is no npm, no bundler and no build step: edit the files in `assets/js/` and reload. It does not use or bundle `nexus-payment-gateways`; that package was reference reading only. WordPress loads the files in order through script dependencies (`includes/frontend/class-assets.php`): `core.js` → `sequence.js` → every enabled provider's gateway file → `checkout.js`. Provider SDKs (Stripe.js, Solidgate, PayPal, BridgerPay) load from the providers' own URLs when a gateway mounts, and card fields stay in the providers' iframes.
+The browser code is this plugin's own plain JavaScript (ES2017). There is no npm, no bundler and no build step: edit the files in `assets/js/` and reload. It does not use or bundle `nexus-payment-gateways`; that package was reference reading only. WordPress loads the files in order through script dependencies (`includes/frontend/class-assets.php`): `core.js` → `sequence.js` → every enabled provider's gateway file → `checkout.js`. Provider SDKs (Stripe.js, Solidgate, PayPal, BridgerPay, Evervault) load from the providers' own URLs when a gateway mounts, and card fields stay in the providers' iframes.
 
 Nothing in `core.js`, `sequence.js` or `checkout.js` names a gateway. Each gateway file declares what differs:
 
@@ -81,6 +84,8 @@ CellonPC.registerGateway({
     email: "provider",            // who collects the email: "page" | "element" | "provider"
     emailAtIntent: true,          // the intent keeps its email: remount when the page's email changes
     remountOnRetry: true,         // a declined intent cannot be paid again
+    intentOnClick: false,         // PayPal: its button makes the order on click; a refused order keeps the button
+    verifyUntilKnown: false,      // Evervault: after an unclear outcome, ask the server until it knows
     processingNotice: false,      // the provider shows its own processing state
     walletClass: "solid_gpay",    // class on the page's wallet container while active
     analytics: null,              // e.g. { referenceKey: "payment_intent_id" } for first_sale_fronted
@@ -92,7 +97,7 @@ Any setting may be a function `(options, gateway)`, for settings that depend on 
 
 ### Adding a gateway
 
-1. **Browser:** `assets/js/gateways/<slug>.js` calling `CellonPC.registerGateway({ slug, mount, … })`. `mount(ctx)` gets `ctx.gateway`, `ctx.host`, `ctx.options` (from the PHP class), `ctx.checkout`, `ctx.api.intent / confirm / chargeToken` (this plugin's REST endpoints), `ctx.events.ready / processing / succeeded / failed / cancelled / accountChanged` and `ctx.page.email / reportEmail`. Report a failure as `{ stage: "load" | "intent" | "payment" | "confirm", code, message }`; the sequence decides whether to move on.
+1. **Browser:** `assets/js/gateways/<slug>.js` calling `CellonPC.registerGateway({ slug, mount, … })`. `mount(ctx)` gets `ctx.gateway`, `ctx.host`, `ctx.options` (from the PHP class), `ctx.checkout`, `ctx.api.intent / confirm / chargeToken / pay` (this plugin's REST endpoints; `pay` = a payment the API runs in one call), `ctx.events.ready / processing / succeeded / failed / cancelled / accountChanged` and `ctx.page.email / reportEmail`. Report a failure as `{ stage: "load" | "intent" | "payment" | "confirm", code, message }`; the sequence decides whether to move on.
 2. **Server:** `includes/providers/class-<slug>-provider.php` extending `Abstract_Provider`: `slug()`, `label()`, the field allow-lists, `intent_reference()` / `confirm_reference()`, and as needed `api_routes()` (today's per-gateway routes; none with the common API), `browser_options( $env )`, `site_events()`, `collected_email()`, `redirect_return()`. Register it in `Provider_Registry` (and `cellon-payment-collection.php`), or from outside through the `cellon_payment_collection_providers` filter with `script_url()` pointing at its browser file.
 
 Nothing else changes: the provider is enabled by default, its script is enqueued, its options and events reach the page, and the REST endpoints accept it when the API lists it for the quiz result.

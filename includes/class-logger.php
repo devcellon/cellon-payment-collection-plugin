@@ -13,8 +13,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 final class Logger {
 
-	/** Keys whose values are never written to the log. */
-	const REDACT = [ 'authorization', 'token', 'api_token', 'client_secret', 'secret', 'signature', 'paymentintent', 'cashier_token', 'credit_card_token', 'encrypted_cvv', 'payment_obj', 'email', 'customer_email' ];
+	/** Keys whose values are never written to the log. `card`, `wallet`, `network_token`, `cryptogram`: encrypted card / wallet data (Evervault). */
+	const REDACT = [ 'authorization', 'token', 'api_token', 'client_secret', 'secret', 'signature', 'paymentintent', 'cashier_token', 'credit_card_token', 'encrypted_cvv', 'payment_obj', 'card', 'wallet', 'network_token', 'cryptogram', 'email', 'customer_email' ];
 
 	/**
 	 * @param string              $event   Short event name, e.g. "intent.failed".

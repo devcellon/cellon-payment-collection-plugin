@@ -6,7 +6,13 @@
  *     as a switch;
  *   - a declined payment moves to the next provider at most `maxDeclineSwitches` times (default 1); after
  *     that the customer stays on the current provider (`lastGatewayDecline` "retry") or the box ends ("fail");
- *   - an unclear outcome asks the server (`verifyPayment`) before anything else.
+ *   - an unclear outcome asks the server (`verifyPayment`) before anything else; a gateway with `verifyUntilKnown`
+ *     (Evervault: the API may still be running its processors) asks again every `verifyPollMs` until it knows;
+ *   - a 3D Secure session the API could not use (decision "again": nothing charged, not a decline) keeps the same
+ *     provider and asks the customer to press Pay again; it never counts as a switch;
+ *   - a gateway with `intentOnClick` (PayPal) creates its intent when the buyer clicks its button: an intent the API
+ *     refuses then counts as a failure after Pay, so on the box's last gateway the button stays for another try
+ *     instead of the box ending (only a gateway that cannot load leaves quietly).
  *
  * The sequence knows no gateway by name: each gateway's behaviour comes from its registered definition
  * (CellonPC.registerGateway). Plain ES2017.
@@ -44,6 +50,7 @@
      *   readyTimeoutMs      a provider not ready by then failed to load (default 20000)
      *   emailRemountDelayMs (default 400)
      *   verifyPayment(attempt) → Promise<true | false | null>
+     *   verifyPollMs        verifyUntilKnown gateways: pause between two status checks (default 5000)
      *   onSuccess(result), onAttemptFailed(attempt), onExhausted(attempts)
      */
     function Sequence(opts) {
@@ -274,6 +281,11 @@
         var activeIndex = this.state.activeIndex;
         var gateway = gateways[activeIndex];
         var decision = CP.decide(failure);
+        // The customer pressed Pay: an intent made then (Stripe) failing is part of their payment. So is an order made
+        // by the provider's own button on the buyer's click (PayPal), which starts before "processing": it is never a
+        // gateway that could not load, so its box does not end and the button stays on the page
+        var intentOnClick = failure.stage === "intent" && !!this.capability("intentOnClick");
+        var paying = this.state.status === "processing" || intentOnClick;
         if (failure.stage === "payment") {
             var switchOn = this.opts.switchOn || "soft";
             if ((decision === "retry_same" && switchOn !== "soft") || (decision === "stop" && switchOn === "all")) decision = "next_gateway";
@@ -286,6 +298,10 @@
             if (canMoveOn) this.declineSwitches++;
             else decision = "retry_same";
         }
+        // Pay on the last gateway could not start (API / network error, nothing charged): with "retry" its form
+        // stays for another try instead of the box ending
+        if (decision === "next_gateway" && failure.stage === "intent" && paying && activeIndex + 1 >= gateways.length &&
+            this.opts.lastGatewayDecline === "retry") decision = "retry_same";
         // Nothing left to try: the box ends instead of mounting the same gateway again
         var exhausted = this.opts.lastGatewayDecline === "fail" && failure.stage === "payment" &&
             (decision === "stop" || (decision === "retry_same" && !canMoveOn));
@@ -306,6 +322,13 @@
             return { decision: kind, failure: failure, message: messages[kind] || CP.defaultMessages[kind] || "" };
         };
 
+        if (decision === "again") {
+            // Not a decline and nothing was charged (a 3D Secure session the API could not use): the same form stays
+            // and the next Pay starts over, never on another gateway
+            this.set({ attempts: attempts });
+            return this.stay(id, notice("again"));
+        }
+
         if (exhausted) {
             this.ended = true;
             this.unmount();
@@ -315,8 +338,9 @@
         }
 
         if (decision === "next_gateway") {
-            // Before the customer typed anything (SDK / key / intent problem) the switch is silent
-            var silent = failure.stage === "load" || failure.stage === "intent";
+            // Before the customer pressed Pay (SDK / key / intent problem) the switch is silent; after it they are
+            // told to enter the card again in the next form (no "processing…" left over a fresh form)
+            var silent = (failure.stage === "load" || failure.stage === "intent") && !paying;
             var delay = silent ? 0 : this.opts.switchDelayMs || 0;
             var next = function () {
                 if (id !== self.mountId) return; // detached, retried or replaced meanwhile
@@ -335,23 +359,33 @@
         }
         if (decision === "retry_same") {
             this.set({ attempts: attempts });
-            return this.stay(id, notice("retry_same"));
+            // Pay that could not start is not a decline: "could not be processed, enter the card again"; a button that
+            // makes its own order (PayPal) has no card to re-enter: "could not be completed", the button stays
+            if (intentOnClick) return this.stay(id, notice("failed"));
+            return this.stay(id, notice(failure.stage === "intent" ? "next_gateway" : CP.declineNotice(failure)));
         }
 
         // verify
         this.set({ attempts: attempts, status: "verify", notice: notice("verify") });
         if (!this.opts.verifyPayment) return Promise.resolve();
-        return this.opts.verifyPayment(attempt).catch(function () { return null; }).then(function (paid) {
-            if (id !== self.mountId) return;
-            if (paid === true) {
-                var result = { gateway: failure.gateway, accountId: attempt.accountId, data: null };
-                self.set({ status: "succeeded", result: result, notice: null });
-                if (self.opts.onSuccess) self.opts.onSuccess(result);
-            } else if (paid === false) {
-                // Not paid: try again on the same gateway, never silently on another one
-                return self.mount(activeIndex, notice("retry_same"));
-            }
-        });
+        // A gateway whose payment the API may still be running (verifyUntilKnown) asks again until the server knows
+        var untilKnown = !!this.capability("verifyUntilKnown");
+        var ask = function () {
+            return self.opts.verifyPayment(attempt).catch(function () { return null; }).then(function (paid) {
+                if (id !== self.mountId || self.state.status !== "verify") return;
+                if (paid === true) {
+                    var result = { gateway: failure.gateway, accountId: attempt.accountId, data: null };
+                    self.set({ status: "succeeded", result: result, notice: null });
+                    if (self.opts.onSuccess) self.opts.onSuccess(result);
+                } else if (paid === false) {
+                    // Not paid: try again on the same gateway, never silently on another one
+                    return self.mount(activeIndex, notice("retry_same"));
+                } else if (untilKnown) {
+                    return CP.wait(self.opts.verifyPollMs || 5000).then(ask);
+                }
+            });
+        };
+        return ask();
     };
 
     Sequence.prototype.stay = function (id, notice) {

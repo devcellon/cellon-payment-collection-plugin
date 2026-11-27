@@ -116,13 +116,16 @@ The wrapper around it stays in the template, whichever layout the page uses:
 | --- | --- | --- |
 | `flow` | `first-sale` | `first-sale`, or `cross-sale` (offer accept / skip; the API charges the first sale's saved method). |
 | `direct` | `show` | `hide` drops the direct providers (PayPal). |
-| `pay_label` | ACF `get_result_button__label` | Stripe / BLOX pay button. Solidgate and PayPal render their own buttons. |
+| `pay_label` | ACF `get_result_button__label` | Stripe / BLOX / Evervault pay button. Solidgate and PayPal render their own buttons. |
 | `pay_class` | `orange-btn big float-right` | Classes of the pay button. |
-| `price` | `1` | Shows the price line in `.pprice`: `first_sale_price_label`, or `first_and_cross_sale_price_label` when `cross_sale_compulsory`. |
+| `processing_label` | ACF `processing` | Pay button text while paying. |
+| `price` | `1` | Shows the price line in `.pprice`: `first_sale_price_label`, or `first_and_cross_sale_price_label` when `cross_sale_compulsory`. A site changes its markup with the `cellon_payment_collection_price_html` filter (§11). |
 | `separator` | `Or Pay with Card` (translated, §7) | Line between the express row and the card form. |
+| `card_reveal` | empty | Label of a button (`.credit-btn .btn-green`) that replaces the separator and opens the card form. The form (`#paymentFrm.cpc-card` with theme ids) stays closed until then; the express row hides while it is open, and shows again above the open form once a card payment failed (PayPal and the wallets stay offered next to the card form). The checkout pages of wwpersonality's JP / KO templates use it. |
+| `card_back`, `card_back_icon` | empty | With `card_reveal`: text and image URL of the link (`.back-btn`) that closes the card form again. |
 | `express_layout` | `row` | Wallets (Google Pay / Apple Pay) and PayPal. `row`: side by side, one per row when there is no room for two, a single button full width, two wallets on a row of their own with PayPal under them. `stack`: every button a full-width row. The plugin lays this row out itself, whatever the theme's old `#gpay_btn` / `#paypal-button-container` CSS says. |
 | `switch_on` | `all` | Which failures move to the next provider (§6). |
-| `last_gateway` | `fail` | A failure on the last provider ends the checkout; `retry` keeps its form for another card. |
+| `last_gateway` | `fail` | A failure on the last provider ends the checkout; `retry` keeps its form for another card (a decline, or an API error after Pay). |
 | `max_switches` | empty | Switches after a **declined** payment. Empty: every card provider once (Stripe → BridgerPay → Solidgate), then `last_gateway` applies. `1`: one fallback only. A provider that fails to load is always skipped. |
 | `switch_delay` | `1500` | ms the failed provider and its message stay visible before the next one mounts. |
 | `theme_ids` | `1` | Use `#gpay_btn`, `#paypal-button-container` and `#paymentResponse`. Only the first checkout on a page gets them. |
@@ -198,10 +201,12 @@ provider 1 ─ declined ─▶ provider 2 mounts in the same place ─ declined 
 ```
 
 - **What counts as a failure:** the SDK cannot load, the API refuses the intent, or the payment is declined, any decline, including card errors and a declined Google Pay / Apple Pay payment (`switch_on="all"`). Incomplete card fields are not a failure: the form marks them and the customer stays on it. The customer re-enters the card on the next provider; the email typed in Stripe's field goes with it.
-- **Every provider once** (`max_switches` empty, the default): a failed provider is never mounted again. After the last one the checkout ends with "Your payment could not be completed" (`last_gateway="fail"`). `max_switches="1"` restores the old single fallback; `last_gateway="retry"` keeps the last provider's form for another card.
+- **Every provider once** (`max_switches` empty, the default): a failed provider is never mounted again. After the last one the checkout ends with "Your payment could not be completed" (`last_gateway="fail"`). `max_switches="1"` restores the old single fallback; `last_gateway="retry"` keeps the last provider's form for another card, after a decline ("Your payment was declined…") and after an API error on Pay ("Your payment could not be processed…").
+- **Silent or told:** a provider that fails while loading, before the customer pressed Pay, is skipped without a message. An intent made on Pay (Stripe, Evervault) that the API refuses is part of the customer's payment: the next provider mounts with "Your payment could not be processed. Please enter your card details again", never under a leftover "Processing…".
 - **The failed provider's message stays for 1.5 s** (`switch_delay`) before the next one mounts. This replaces the themes' "Do Not Honor → Solidgate" cookie and page reload.
 - **Exception: the outcome is unclear.** If the provider took the payment but the API did not answer, the chain never switches. The server checks with the API first, so a customer is never charged twice.
-- **Direct providers (PayPal)** from `direct_payment_provider_details` sit next to the wallet button and load on their own; a PayPal failure does not affect the card chain.
+- **Evervault** is one provider of the chain like the others. Its payment is one API call that tries the processors of the Evervault account (no time limit, [contract E](BACKEND-CONTRACTS.md)); its 402 is the decline after all of them, and `data.code` decides as above (`PAYMENT_HARD_DECLINED` / `PAYMENT_BLOCKED` stop, `PAYMENT_DECLINED_FUNDS` / `PAYMENT_3DS_FAILED` stay on the form, other declines move on). A 3D Secure session the API could not use (`THREE_DS_NOT_FINISHED`, `THREE_DS_SESSION_*`) is not a failure of the provider: nothing was charged, the form stays with "…Please press Pay again." and no switch is used. A lost answer or `PAYMENT_RESULT_UNKNOWN` keeps the customer on "We are checking…" while the page asks the server every 5 s until it knows.
+- **Direct providers (PayPal)** from `direct_payment_provider_details` sit next to the wallet button and load on their own; a PayPal failure does not affect the card chain. PayPal leaves the page only when it cannot load (no client id, not eligible). Once the buyer clicked it, a failure keeps the button for another try: an order the API refuses ("Your payment could not be completed…"), a declined payment, or a closed PayPal window. A card failure never removes PayPal, so the customer can always switch between another card and PayPal (with `card_reveal`, the express row is hidden while the card form is open; it comes back with the back link, and by itself as soon as a card payment fails).
 - **One payment at a time:** while one box processes, the others are locked, and the server refuses a second payment as well.
 
 `switch_on="fixable"` keeps hard declines (stolen, lost, fraud) on the same provider, and `switch_on="soft"` switches on soft declines only. Card networks discourage sending a hard-declined card to another acquirer, so consider `fixable` if acquirers raise excessive-retry flags.
@@ -250,10 +255,14 @@ function iq_payment_language_atts( array $quiz_result_data = [] ): array {
 	];
 }
 
-// wwpersonality — functions.php
-function iq_payment_language_atts( array $quiz_result_data = [] ): array {
-	$lang = defined( 'ICL_LANGUAGE_CODE' ) ? ICL_LANGUAGE_CODE : '';
-	return [ 'locale' => in_array( get_current_blog_id(), [ 2, 3 ], true ) ? 'ja' : ( $lang === 'ko' ? 'ko' : 'auto' ) ];
+// wwpersonality — inc/cellon-payment-collection.php (with the switch, the checkout pages' card layout and the
+// Quiz Payment price line: see §9)
+function iq_payment_language_atts(): array {
+	if ( in_array( get_current_blog_id(), [ 2, 3 ], true ) ) {
+		return [ 'locale' => 'ja' ];
+	}
+	$language = defined( 'ICL_LANGUAGE_CODE' ) ? ICL_LANGUAGE_CODE : '';
+	return [ 'locale' => $language === 'ko' ? 'ko' : 'auto' ];
 }
 ```
 
@@ -321,6 +330,7 @@ When collecting:
 | `gtag('event', 'PaymentPage')` on Solidgate submit, blogs 10 and 20 | ✓ | ✓ | ✓ |
 | `do_action('ab_testing_main_total', …)` on the server (Core plugin parity, skipped for `ab_utm_source = Emails`) | – | ✓ | ✓ |
 | BridgerPay (new): `bridgerpay_payment`, `bridgerpay_payment_failed` | ✓ | ✓ | ✓ |
+| Evervault (new): `evervault_payment`, `evervault_payment_failed` (once per session), `first_sale` with `first_sale_usd_price`, server `ab_testing_main_total` | ✓ | ✓ | ✓ |
 
 The theme's `.preload` overlay shows while a payment is recorded and before the redirect, as before. After the sale the browser goes to the page for the API's `redirect_page` tag, using the Core plugin's page map with `?qid=`, just like the old handlers.
 
@@ -338,6 +348,11 @@ The theme's `.preload` overlay shows while a payment is recorded and before the 
 - **BridgerPay:**
   - Checkout widget: `credit_card` only, light theme, "Pay" button.
   - BLOX: the site font and the card placeholder.
+- **Evervault** (Evervault's own UI Components only, so any processor behind the Evervault account works unchanged):
+  - Card form (`clean` theme) with the page's Pay button and email field; labels and placeholders in ja, ko and en (others English). Incomplete fields are marked by the form and are not a payment attempt.
+  - Apple Pay where the browser has it, else Google Pay: Evervault's button in the wallet slot (`#gpay_btn`), black, as tall as the PayPal button (55 px; iqpro 50 px). Needs HTTPS and the Evervault merchant (provider list `merchant_id`, which the API sends; the `cellon_payment_collection_evervault_merchant_id` filter overrides it); Apple Pay also a domain registered with that merchant. Without them only the card form shows. A one-off payment for the first sale: the cross-sale and renewals are charged later by the backend with the saved payment method.
+  - No payment logic in the browser: Pay (or the wallet sheet) sends the encrypted card or wallet token once to `…/providers/evervault/pay`; WordPress makes the one API call ([contract E](BACKEND-CONTRACTS.md)).
+  - 3D Secure (card form): each Pay first asks the API for a 3DS session (`…/providers/evervault/3ds-session`, nothing charged). When the bank asks, its window opens as Evervault's modal over the page, then the payment names the session. While the API's 3DS switch is off, or before the route is deployed, the payment goes on without a session ([contract E3](BACKEND-CONTRACTS.md)). The modal must show above the payment dialog: check it on any page that adds a full-screen overlay. Apple Pay / Google Pay pay without this step. Test with Evervault's 3DS sandbox cards: `4242 4242 4242 4242` opens the window. Only the cards on Evervault's 3DS test list give a known answer in its sandbox.
 
 ### Back from a Stripe redirect
 
@@ -426,12 +441,14 @@ Migrate the checkout templates that are actually assigned to pages (Pages → Te
 
 | Page | Layout | Old payment markup | Old scripts | Shortcode |
 | --- | --- | --- | --- | --- |
-| `template-parts/quiz-payment-gpay-applepay.php` (included by Quiz Payment) | Payment page dialog | 140–224 | 235–413 | `flow="first-sale"` |
-| `page-template/quiz-checkout-ko.php` (Quiz Checkout for KO) | Checkout page, inline | 475–561 | 798–1018 | `flow="first-sale"` |
-| `page-template/quiz-checkout-jp.php` (Quiz Checkout JP) | Checkout page, inline | 529–621 | 881–1106 | `flow="first-sale"` |
-| `page-template/offer.php` (Offer Page) | Cross sale | form 83–116 | 123–221 | `flow="cross-sale"` |
+| `template-parts/quiz-payment-gpay-applepay.php` (included by Quiz Payment; blog 1 en / ko, blogs 2–4) | Payment page dialog | Migrated | Migrated | `wwp_payment_checkout( [ 'separator' => 'Or Pay with Card' ] )`; price line "Total today: …" (en) / "총액: …" (ko) through `cellon_payment_collection_price_html` |
+| `page-template/quiz-checkout-ko.php` (Quiz Checkout, WPML ko) | Checkout page, inline | Migrated | Migrated | `wwp_checkout_page_payment()`: `card_reveal` layout, Korean texts, no price next to the Pay button |
+| `page-template/quiz-checkout-jp.php` (Quiz Checkout JP; blog 1 and blog 2) | Checkout page, inline | Migrated | Migrated | `wwp_checkout_page_payment()`: `card_reveal` layout, Japanese texts; Solidgate texts from the Quiz Payment page (9989), as before |
+| `page-template/offer.php` (Offer Page) | Cross sale | form 83–116 | 123–221 | Not migrated: stays on the theme code. |
 
-`quiz-checkout.php` on wwpersonality also holds a dead `#paymentModal` popup (its open button is commented out). Leave it alone or delete it.
+The theme's `inc/cellon-payment-collection.php` holds the switch (`wwp_payment_collection_active()`, `wwp_payment_collection_begin()` before `get_header()`), the language helper and these site settings. With the plugin off, every template runs its old code.
+
+`quiz-checkout.php` (English) renders no payment: its `#paymentModal` popup is dead (its open button is commented out) and its button leads to Quiz Payment. `google-pay.php` and `braingym-quiz-payment.php` are assigned to no page locally and were not migrated.
 
 ## 10. How a payment runs
 
@@ -462,6 +479,11 @@ browser   provider 1 of the sequence mounts (and PayPal on its own)
 | `cellon_payment_collection_adapter_options` | filter | Final browser options per provider, keyed by slug (each provider builds its own in `browser_options()`). |
 | `cellon_payment_collection_stripe_email_element` | filter | `false` = Stripe uses the page's email field instead of its Contact Details Element. |
 | `cellon_payment_collection_messages` | filter | Customer texts. |
+| `cellon_payment_collection_price_html` | filter | `( $html, $label, $context )` markup of the price next to the pay button (post HTML). |
+| `cellon_payment_collection_evervault_merchant_id` | filter | `( $merchant_id, $env )` Evervault merchant (`merchant_…`) for its Apple Pay / Google Pay. Default: the provider list's `merchant_id`. `''` = card form only. |
+| `cellon_payment_collection_evervault_wallet_country` | filter | `( $country, $env )` country of the Apple Pay / Google Pay transaction (default: the checkout's). |
+| `cellon_payment_collection_evervault_timeout` | filter | Seconds to wait for the API's answer to an Evervault payment; `0` (default) = until it answers. |
+| `cellon_payment_collection_pay_lock_seconds` | filter | How long a one-call payment's checkout lock may look busy before it counts as left over from a killed PHP process (default 1800). Not a payment time limit. |
 | `cellon_payment_collection_redirect_url` | filter | URL for a `redirect_page` tag. |
 | `cellon_payment_collection_payment_succeeded` | action | `( $slug, $api_data, $context )` after the API recorded a sale. |
 | `cellon_payment_collection_fire_ab_event` | filter | Fire `ab_testing_main_total`. |

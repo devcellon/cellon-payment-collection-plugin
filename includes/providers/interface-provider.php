@@ -28,7 +28,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 interface Provider {
 
-	/** API slug, lower case, as in `payment_provider_slug` (stripe, paypal, solidgate, bridgerpay). */
+	/** API slug, lower case, as in `payment_provider_slug` (stripe, paypal, solidgate, bridgerpay, evervault). */
 	public function slug(): string;
 
 	public function label(): string;

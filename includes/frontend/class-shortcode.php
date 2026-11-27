@@ -13,10 +13,18 @@
  * Attributes (all optional)
  *   flow           first-sale | cross-sale                                   default first-sale
  *   direct         show | hide        direct providers (PayPal)              default show
- *   pay_label      Stripe / BLOX pay button                                  default ACF get_result_button__label
+ *   pay_label      pay button of the card gateways that use the page's button   default ACF get_result_button__label
  *   pay_class      classes of the pay button                                 default "orange-btn big float-right"
+ *   processing_label  pay button text while paying                          default ACF processing
  *   price          1 | 0              show the price line next to the pay button   default 1
+ *                  (its markup: filter cellon_payment_collection_price_html)
  *   separator      text between wallets/PayPal and the card form             default "Or Pay with Card"
+ *   card_reveal    label of a button that opens the card form in place of the separator; the form
+ *                  (#paymentFrm with theme ids) stays closed until then and the wallets / PayPal hide
+ *                  while it is open, until a card payment fails (then they show above it)
+ *                                                                             default '' (always open)
+ *   card_back      card_reveal: label of the link back to the wallets / PayPal   default ''
+ *   card_back_icon card_reveal: image URL before that label                  default ''
  *   express_layout row | stack        wallets + PayPal: side by side (one per row when narrow, two
  *                                     wallets get a row of their own) | every button a full-width row  default row
  *   class          extra classes on the wrapper
@@ -143,8 +151,12 @@ final class Shortcode {
 				'direct'       => 'show',
 				'pay_label'    => '',
 				'pay_class'    => '',
+				'processing_label' => '',
 				'price'        => '1',
 				'separator'    => '',
+				'card_reveal'    => '',
+				'card_back'      => '',
+				'card_back_icon' => '',
 				'express_layout' => 'row',
 				'class'        => '',
 				'switch_on'    => 'all',
@@ -170,16 +182,16 @@ final class Shortcode {
 		self::nocache();
 
 		if ( ! Config::is_configured() ) {
-			return $this->problem( 'not_configured', 'The quiz-funnel-core plugin is not active, or its API secret is not saved.' );
+			return $this->problem( 'not_configured', 'The quiz-funnel-core plugin is not active, or its API secret is not saved.', $atts['locale'] );
 		}
 
 		$context = $this->resolver->resolve( $flow, $atts );
 		if ( is_wp_error( $context ) ) {
 			do_action( 'cellon_payment_collection_context_missing', $context, $flow, $atts );
-			return $this->problem( $context->get_error_code(), $context->get_error_message() );
+			return $this->problem( $context->get_error_code(), $context->get_error_message(), $atts['locale'] );
 		}
 		if ( $flow === 'first-sale' && ! $context->providers->chain && ! $context->providers->direct ) {
-			return $this->problem( 'no_providers', 'The API listed no provider this plugin can run (source: ' . $context->providers->source . ', skipped: ' . wp_json_encode( $context->providers->skipped ) . ').' );
+			return $this->problem( 'no_providers', 'The API listed no provider this plugin can run (source: ' . $context->providers->source . ', skipped: ' . wp_json_encode( $context->providers->skipped ) . ').', $atts['locale'] );
 		}
 
 		$profile       = Site_Profile::build( $context, $atts, $this->checkout_providers( $context ) );
@@ -191,7 +203,7 @@ final class Shortcode {
 		];
 
 		$session = $this->store->create( $context );
-		$this->assets->enqueue( self::messages() );
+		$this->assets->enqueue( self::messages( $atts['locale'] ) );
 
 		return $flow === 'cross-sale'
 			? $this->cross_sale_markup( $session->token, $atts, $profile )
@@ -213,6 +225,7 @@ final class Shortcode {
 			'direct'   => $theme_ids ? 'paypal-button-container' : $uid . '-direct',
 			'response' => $theme_ids ? 'paymentResponse' : $uid . '-response',
 			'email'    => $uid . '-email',
+			'card'     => $theme_ids ? 'paymentFrm' : $uid . '-card',
 		];
 
 		$chain  = $context->providers->chain;
@@ -243,6 +256,9 @@ final class Shortcode {
 		$labels = (array) $profile['labels'];
 		if ( $atts['pay_label'] !== '' ) {
 			$labels['pay'] = $atts['pay_label'];
+		}
+		if ( $atts['processing_label'] !== '' ) {
+			$labels['processing'] = $atts['processing_label'];
 		}
 		if ( $atts['separator'] !== '' ) {
 			$labels['separator'] = $atts['separator'];
@@ -279,9 +295,9 @@ final class Shortcode {
 			'resume'       => $this->resume(),
 		];
 
-		$messages  = self::messages();
+		$messages  = self::messages( $atts['locale'] );
 		$pay_class = $atts['pay_class'] !== '' ? $atts['pay_class'] : (string) $profile['pay_class'];
-		$price     = $atts['price'] === '1' ? (string) $labels['price'] : '';
+		$price     = $atts['price'] === '1' ? $this->price_html( (string) $labels['price'], $context ) : '';
 
 		// Express row: wallets of the active card provider and the direct providers (PayPal)
 		$direct_html = '';
@@ -305,10 +321,11 @@ final class Shortcode {
 
 		$chain_html = '';
 		if ( $chain ) {
-			// Hidden by checkout.js while the express row above shows nothing (no wallet, no PayPal)
-			$chain_html = '<div class="line-group cpc-line"><span>' . esc_html( $labels['separator'] ) . '</span></div>'
-				. $email
-				. $this->box( 'chain', '', $messages, $pay_class, $labels['pay'], $price );
+			$card = $email . $this->box( 'chain', '', $messages, $pay_class, $labels['pay'], $price );
+			$chain_html = $atts['card_reveal'] !== ''
+				? $this->card_reveal( $card, $atts, $ids['card'] )
+				// Hidden by checkout.js while the express row above shows nothing (no wallet, no PayPal)
+				: '<div class="line-group cpc-line"><span>' . esc_html( $labels['separator'] ) . '</span></div>' . $card;
 		}
 
 		return '<div class="' . esc_attr( $this->classes( 'cpc-checkout payment-methods ' . $atts['class'] ) ) . '" data-cpc-checkout="' . esc_attr( (string) wp_json_encode( $config ) ) . '" data-flow="first-sale">'
@@ -324,6 +341,7 @@ final class Shortcode {
 	 * One provider box. The notice goes to the shared #paymentResponse; the box keeps its own states.
 	 *
 	 * @param array<string,string>                $messages
+	 * @param string                              $price   Price markup next to the pay button (price_html()), '' for none.
 	 * @param array<int,array<string,mixed>>|null $details Direct box: its one provider.
 	 */
 	private function box( string $kind, string $index, array $messages, string $pay_class, string $pay_label, string $price, ?array $details = null, string $host_id = '' ): string {
@@ -333,7 +351,7 @@ final class Shortcode {
 		return '<div class="cpc-box cpc-box--' . esc_attr( $kind ) . '" data-cpc-box="' . esc_attr( $kind ) . '" data-index="' . esc_attr( $index ) . '" data-status="idle"' . $data . '>'
 			. '<div class="cpc-host"' . ( $host_id !== '' ? ' id="' . esc_attr( $host_id ) . '" style="position: relative;"' : '' ) . '></div>'
 			. '<div class="pprice cpc-actions" hidden>'
-			. ( $price !== '' ? '<span class="price">' . esc_html( $price ) . '</span>' : '' )
+			. $price
 			. '<button type="button" class="' . esc_attr( $pay ) . '" hidden><span class="wpf_txt_normal cpc-pay__label">' . esc_html( $pay_label ) . '</span></button>'
 			. '</div>'
 			. '<div class="cpc-verify" hidden>'
@@ -341,6 +359,39 @@ final class Shortcode {
 			. '<button type="button" class="cpc-retry">' . esc_html( $messages['pay_again'] ) . '</button>'
 			. '</div>'
 			. '</div>';
+	}
+
+	/**
+	 * The price next to the pay button: the theme's `<span class="price">`, or a site's own markup (e.g. a
+	 * "Total today:" prefix per language) through the filter, limited to post HTML.
+	 */
+	private function price_html( string $label, Checkout_Context $context ): string {
+		$html = $label !== '' ? '<span class="price">' . esc_html( $label ) . '</span>' : '';
+
+		/**
+		 * Markup of the price next to the pay button.
+		 *
+		 * @param string           $html    Default markup ('' when there is no price label).
+		 * @param string           $label   The price label (Site_Profile::price_label()).
+		 * @param Checkout_Context $context
+		 */
+		return wp_kses_post( (string) apply_filters( 'cellon_payment_collection_price_html', $html, $label, $context ) );
+	}
+
+	/**
+	 * Card form behind a button (card_reveal): the button takes the separator's place, the form opens under it
+	 * with a link back to the wallets / PayPal (checkout.js). Theme classes credit-btn / btn-green / back-btn.
+	 *
+	 * @param array<string,string> $atts
+	 */
+	private function card_reveal( string $card, array $atts, string $card_id ): string {
+		$back = '';
+		if ( $atts['card_back'] !== '' ) {
+			$icon = $atts['card_back_icon'] !== '' ? '<img src="' . esc_url( $atts['card_back_icon'] ) . '" alt=""> ' : '';
+			$back = '<span class="back-btn cpc-back" role="button" tabindex="0">' . $icon . esc_html( $atts['card_back'] ) . '</span>';
+		}
+		return '<div class="credit-btn cpc-reveal"><button type="button" class="btn btn-green">' . esc_html( $atts['card_reveal'] ) . '</button></div>'
+			. '<div id="' . esc_attr( $card_id ) . '" class="cpc-card" hidden>' . $back . $card . '</div>';
 	}
 
 	/**
@@ -399,9 +450,9 @@ final class Shortcode {
 	}
 
 	/** Customers see a neutral message; administrators also see the reason. */
-	private function problem( string $code, string $detail ): string {
+	private function problem( string $code, string $detail, string $locale = '' ): string {
 		Logger::log( 'render.problem', [ 'code' => $code, 'detail' => $detail ] );
-		$html = '<div class="cpc-checkout cpc-checkout--unavailable" data-status="failed"><p class="cpc-unavailable">' . esc_html( self::messages()['unavailable'] ) . '</p>';
+		$html = '<div class="cpc-checkout cpc-checkout--unavailable" data-status="failed"><p class="cpc-unavailable">' . esc_html( self::messages( $locale )['unavailable'] ) . '</p>';
 		if ( current_user_can( 'manage_options' ) ) {
 			$html .= '<p class="cpc-admin-note"><strong>Cellon Payment Collection (' . esc_html( $code ) . '):</strong> ' . esc_html( $detail ) . '</p>';
 		}
@@ -412,15 +463,23 @@ final class Shortcode {
 		return implode( ' ', array_filter( array_map( 'sanitize_html_class', preg_split( '/\s+/', $value ) ?: [] ) ) );
 	}
 
-	/** Customer messages in the page's language (Message_Texts; English when it has none). @return array<string,string> */
-	public static function messages(): array {
-		$translated = Message_Texts::for_locale();
+	/**
+	 * Customer messages in the page's language (Message_Texts; English when it has none).
+	 *
+	 * @param string $locale The template's `locale` attribute ("ja", "auto", ""): WPML, then the site language when empty or auto.
+	 * @return array<string,string>
+	 */
+	public static function messages( string $locale = '' ): array {
+		$translated = Message_Texts::for_locale( $locale );
 		unset( $translated['separator'] );
 		return (array) apply_filters(
 			'cellon_payment_collection_messages',
 			$translated + [
 				'next_gateway' => __( 'Your payment could not be processed. Please enter your card details again to complete the payment.', 'cellon-payment-collection' ),
 				'retry_same'   => __( 'Your payment was declined. Please check your card details or use another card.', 'cellon-payment-collection' ),
+				// 3D Secure (Evervault): the bank did not confirm (PAYMENT_3DS_FAILED); a session the API could not use
+				'three_ds_failed' => __( 'Your bank did not confirm the payment. Please try again.', 'cellon-payment-collection' ),
+				'again'        => __( 'Your payment was not completed and you were not charged. Please press Pay again.', 'cellon-payment-collection' ),
 				'stop'         => __( 'Your payment was declined. Please contact your bank or use another card.', 'cellon-payment-collection' ),
 				'verify'       => __( 'We are checking the status of your payment. Please do not pay again.', 'cellon-payment-collection' ),
 				'unavailable'  => __( 'Payment is not available right now. Please try again in a few minutes.', 'cellon-payment-collection' ),

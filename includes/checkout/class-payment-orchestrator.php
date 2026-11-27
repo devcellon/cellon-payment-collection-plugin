@@ -15,7 +15,9 @@
  *   - Once paid, every later step answers "already paid" with the same redirect (idempotent).
  *
  * The browser core decides *which* provider to show next (its failover policy); this class decides
- * whether the server lets a step run.
+ * whether the server lets a step run. A provider whose payment the API runs in one call (One_Call_Provider,
+ * Evervault) goes through pay(), under the same lock and attempt rules; its 3D Secure session (Three_Ds_Provider)
+ * comes first, through three_ds_session(), and only that session's payment may name it.
  *
  * @package Cellon\PaymentCollection
  */
@@ -28,7 +30,9 @@ use Cellon\PaymentCollection\Api\Payment_Api;
 use Cellon\PaymentCollection\Flow_Log;
 use Cellon\PaymentCollection\Logger;
 use Cellon\PaymentCollection\Providers\Provider;
+use Cellon\PaymentCollection\Providers\One_Call_Provider;
 use Cellon\PaymentCollection\Providers\Provider_Registry;
+use Cellon\PaymentCollection\Providers\Three_Ds_Provider;
 
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
@@ -152,6 +156,257 @@ final class Payment_Orchestrator {
 	 */
 	public function charge_token( string $token, string $slug, array $input ): array {
 		return $this->settle( $token, $slug, $input, 'charge_token' );
+	}
+
+	/**
+	 * 3D Secure, step 1 of a card payment the API runs in one call (Three_Ds_Provider, Evervault; BACKEND-CONTRACTS.md
+	 * E3). The payment's own body goes to the API's 3ds-session route; nothing is charged. The browser gets:
+	 *   { three_ds: "skipped", reason }   pay without a session (the API's 3DS switch is off, nothing to authenticate,
+	 *                                     3DS could not start, or this API has no 3ds-session route yet)
+	 *   { three_ds: "evervault", three_ds_session_id, status }  the bank's window first when status is
+	 *                                     "action-required", then pay naming the session
+	 *   an error with data.stage intent   refused (no price, no account, bad body …), nothing charged
+	 * The session is kept with this checkout: the next payment may name only it, with the same payment data, once.
+	 *
+	 * @param array<string,mixed> $input Browser body: the payment's fields.
+	 * @return array{status:int, body:array<string,mixed>}
+	 */
+	public function three_ds_session( string $token, string $slug, array $input ): array {
+		if ( ! $this->store->lock( $token, 3.0 ) ) {
+			return $this->error( 409, 'payment_in_progress', __( 'A payment is being processed. Please wait.', 'cellon-payment-collection' ), [ 'stage' => 'confirm' ] );
+		}
+		try {
+			$session = $this->store->load( $token );
+			if ( ! $session ) {
+				return $this->expired();
+			}
+			Flow_Log::quiz( (string) ( $session->context['quiz_result_id'] ?? '' ) );
+			if ( $session->is_paid() ) {
+				return $this->paid_response( $session, null );
+			}
+
+			// The payment itself must be allowed; 3DS is optional, so a provider or API without the step pays without it
+			$check = $this->check_provider( $session, $slug, 'pay' );
+			if ( $check ) {
+				$check['body']['data']['stage'] = 'intent';
+				return $check;
+			}
+			$provider = $this->registry->get( $slug );
+			if ( ! $provider instanceof Three_Ds_Provider || ! in_array( 'three_ds_session', $provider->operations(), true ) || ! $this->api->supports( $slug, 'three_ds_session' ) ) {
+				return $this->ok( [ 'three_ds' => 'skipped', 'reason' => 'NOT_SUPPORTED' ] );
+			}
+
+			$max = (int) apply_filters( 'cellon_payment_collection_max_intents', 25 );
+			if ( $session->intent_count >= $max ) {
+				return $this->error( 429, 'too_many_attempts', __( 'Too many payment attempts. Please reload the page.', 'cellon-payment-collection' ), [ 'stage' => 'intent' ] );
+			}
+
+			$gate = $this->resolve_unclear( $session );
+			if ( $gate ) {
+				$gate['body']['data']['stage'] = 'confirm';
+				return $gate;
+			}
+
+			$account = $this->account( $input );
+			if ( ! $session->account_allowed( $slug, $account ) ) {
+				return $this->error( 422, 'invalid_payment_account', __( 'This payment method is not available. Please reload the page.', 'cellon-payment-collection' ), [ 'stage' => 'intent' ] );
+			}
+
+			$plan = $this->apply_price_category( $session, $input );
+			if ( is_wp_error( $plan ) ) {
+				return $this->wp_error( $plan, 'intent' );
+			}
+
+			$body = $provider->three_ds_body( $session->context(), $input, $account );
+			if ( is_wp_error( $body ) ) {
+				return $this->wp_error( $body, 'intent' );
+			}
+
+			$session->three_ds = [];
+			$this->store->save( $session );
+
+			$response = $this->api->three_ds_session( $slug, $body );
+			if ( ! $response->is_success() ) {
+				// An API without the route (404 and no code): 3DS is not there yet, the payment goes on as before
+				if ( $response->status === 404 && $response->code === null ) {
+					Logger::log( 'three_ds.route_missing', [ 'slug' => $slug ] );
+					return $this->ok( [ 'three_ds' => 'skipped', 'reason' => 'ROUTE_NOT_AVAILABLE' ] );
+				}
+				Logger::log( 'three_ds.failed', [ 'slug' => $slug, 'status' => $response->status, 'code' => $response->code ] );
+				$out                          = $this->pass( $response );
+				$out['body']['data']          = (array) ( $out['body']['data'] ?? [] );
+				$out['body']['data']['stage'] = 'intent';
+				return $out;
+			}
+
+			$answer = $provider->three_ds_answer( $response->data_array() );
+			if ( $answer['three_ds'] === 'evervault' ) {
+				$session->three_ds = [
+					'session_id' => $answer['three_ds_session_id'],
+					'body'       => self::fingerprint( $body ),
+					'created'    => time(),
+				];
+				$this->store->save( $session );
+			}
+			return $this->ok( $answer );
+		} finally {
+			$this->store->unlock( $token );
+		}
+	}
+
+	/**
+	 * A payment the API runs in one call (One_Call_Provider, e.g. Evervault): the browser sent what the provider's
+	 * form gave (the encrypted card, or a wallet's token) once; the API charges it, trying its own processors in
+	 * turn, and answers with the outcome. That may take long, so the call has the provider's time limit (none by
+	 * default): PHP waits for the answer, keeps going when the browser leaves (the outcome is recorded either way and
+	 * the browser can ask /status), and the checkout stays locked meanwhile.
+	 *
+	 * The browser gets: paid (with the redirect), or an error whose data.stage is intent (nothing charged; also a 3DS
+	 * session the API cannot use, THREE_DS_*), payment (declined; data.code / data.decline_code, PAYMENT_3DS_FAILED)
+	 * or confirm (unknown: verify first). With three_ds_session_id it must be the session three_ds_session() started
+	 * last for this same body.
+	 *
+	 * @param array<string,mixed> $input
+	 * @return array{status:int, body:array<string,mixed>}
+	 */
+	public function pay( string $token, string $slug, array $input ): array {
+		if ( ! $this->store->lock( $token ) ) {
+			return $this->error( 409, 'payment_in_progress', __( 'A payment is being processed. Please wait.', 'cellon-payment-collection' ), [ 'stage' => 'confirm' ] );
+		}
+		// A PHP fatal error or time limit skips `finally`: the lock is released at shutdown instead (only if
+		// `finally` did not run, so another request's lock is never removed)
+		$released = false;
+		register_shutdown_function(
+			function () use ( &$released, $token ) {
+				if ( ! $released ) {
+					$this->store->unlock( $token );
+				}
+			}
+		);
+		try {
+			$session = $this->store->load( $token );
+			if ( ! $session ) {
+				return $this->expired();
+			}
+			Flow_Log::quiz( (string) ( $session->context['quiz_result_id'] ?? '' ) );
+			if ( $session->is_paid() ) {
+				return $this->paid_response( $session, null );
+			}
+
+			$check = $this->check_provider( $session, $slug, 'pay' );
+			if ( $check ) {
+				return $check;
+			}
+			$provider = $this->registry->get( $slug );
+			if ( ! $provider instanceof One_Call_Provider ) {
+				return $this->error( 404, 'operation_not_supported', __( 'This payment method is not available.', 'cellon-payment-collection' ), [ 'stage' => 'intent' ] );
+			}
+
+			$max = (int) apply_filters( 'cellon_payment_collection_max_intents', 25 );
+			if ( $session->intent_count >= $max ) {
+				return $this->error( 429, 'too_many_attempts', __( 'Too many payment attempts. Please reload the page.', 'cellon-payment-collection' ), [ 'stage' => 'intent' ] );
+			}
+
+			$gate = $this->resolve_unclear( $session );
+			if ( $gate ) {
+				$gate['body']['data']['stage'] = 'confirm';
+				return $gate;
+			}
+
+			$account = $this->account( $input );
+			if ( ! $session->account_allowed( $slug, $account ) ) {
+				return $this->error( 422, 'invalid_payment_account', __( 'This payment method is not available. Please reload the page.', 'cellon-payment-collection' ), [ 'stage' => 'intent' ] );
+			}
+
+			$plan = $this->apply_price_category( $session, $input );
+			if ( is_wp_error( $plan ) ) {
+				return $this->wp_error( $plan, 'intent' );
+			}
+
+			$context = $session->context();
+			$body    = $provider->build_intent_body( $context, $input, $account );
+			if ( is_wp_error( $body ) ) {
+				return $this->wp_error( $body, 'intent' );
+			}
+
+			// A 3DS session is used by one payment only: the one this checkout started last, for this same body
+			$three_ds          = $this->three_ds_check( $session, $body );
+			$session->three_ds = [];
+			if ( is_wp_error( $three_ds ) ) {
+				$this->store->save( $session );
+				return $this->wp_error( $three_ds, 'intent' );
+			}
+
+			// From here money may move: the attempt is "confirming" until the API answers, so a request that never
+			// finishes leaves it unresolved and the next payment of this checkout checks the quiz result first
+			++$session->intent_count;
+			$session->add_attempt( $slug, $account, null );
+			$index = count( $session->attempts ) - 1;
+			$session->set_status( $index, 'confirming' );
+			$this->store->save( $session );
+
+			ignore_user_abort( true );
+			$this->store->hold_lock( $token, $this->pay_lock_seconds() );
+
+			$response = $this->api->pay( $slug, $body, $provider->pay_timeout() );
+
+			if ( $response->is_success() ) {
+				$data   = $response->data_array();
+				$action = $provider->pay_action( $data );
+				if ( is_wp_error( $action ) ) {
+					$session->set_status( $index, 'failed' );
+					$this->store->save( $session );
+					Logger::error( 'pay.unsupported_action', [ 'slug' => $slug, 'next_action' => $data['next_action'] ?? null ] );
+					return $this->wp_error( $action, 'intent' );
+				}
+				if ( $action !== null ) {
+					// Nothing charged yet: the customer authenticates (3DS), then pays again naming that step
+					$session->set_status( $index, 'charged' );
+					$this->store->save( $session );
+					return $this->ok( $action );
+				}
+				$session->attempts[ $index ]['reference'] = $provider->intent_reference( $data );
+				$session->set_status( $index, 'succeeded' );
+				$data['reference']       = $session->attempts[ $index ]['reference'];
+				$data['collected_email'] = '';
+				$this->succeed( $session, $context, $slug, $data );
+				return $this->paid_response( $session, $data );
+			}
+
+			if ( $response->is_outcome_unknown() ) {
+				$status = 'unknown';   // 504 PAYMENT_RESULT_UNKNOWN, 5xx or no answer: never pay again before a check
+				$stage  = 'confirm';
+			} elseif ( $response->status === 402 ) {
+				$status = 'failed';    // declined by every processor the API tried: nothing was charged
+				$stage  = 'payment';
+			} else {
+				$status = 'rejected';  // refused before any charge (validation, account …); checked before the next one
+				$stage  = 'intent';
+			}
+			$session->set_status( $index, $status );
+			$this->store->save( $session );
+			Logger::log( 'pay.failed', [ 'slug' => $slug, 'status' => $response->status, 'code' => $response->code, 'stage' => $stage ] );
+
+			$out                          = $this->pass( $response );
+			$out['body']['data']          = (array) ( $out['body']['data'] ?? [] );
+			$out['body']['data']['stage'] = $stage;
+			$decline                      = $response->data_array()['decline_code'] ?? null;
+			if ( is_scalar( $decline ) && preg_match( '/^[A-Za-z0-9_.-]{1,64}$/', (string) $decline ) ) {
+				$out['body']['data']['decline_code'] = (string) $decline;
+			}
+			return $out;
+		} finally {
+			$this->store->unlock( $token );
+			$released = true;
+		}
+	}
+
+	/**
+	 * How long the lock of a one-call payment may look busy before it counts as left over from a killed process.
+	 * Not a payment time limit: PHP releases the lock as soon as the API answers, and at shutdown after a fatal error.
+	 */
+	private function pay_lock_seconds(): int {
+		return max( Session_Store::LOCK_STALE, (int) apply_filters( 'cellon_payment_collection_pay_lock_seconds', 30 * MINUTE_IN_SECONDS ) );
 	}
 
 	/**
@@ -595,6 +850,35 @@ final class Payment_Orchestrator {
 		return null;
 	}
 
+	/**
+	 * A payment that names a 3DS session must name the one this checkout started last, for the same body (same card,
+	 * price fields and account): one session per Pay press, never reused, the card and price unchanged in between.
+	 *
+	 * @param array<string,mixed> $body
+	 */
+	private function three_ds_check( Checkout_Session $session, array $body ): ?\WP_Error {
+		$named = (string) ( $body['three_ds_session_id'] ?? '' );
+		if ( $named === '' ) {
+			return null;
+		}
+		$started = is_array( $session->three_ds ) ? $session->three_ds : [];
+		if ( (string) ( $started['session_id'] ?? '' ) === '' || ! hash_equals( (string) $started['session_id'], $named )
+			|| ! hash_equals( (string) ( $started['body'] ?? '' ), self::fingerprint( $body ) ) ) {
+			return new \WP_Error( 'three_ds_session_mismatch', __( 'Your payment could not be processed. Please try again.', 'cellon-payment-collection' ), [ 'status' => 422 ] );
+		}
+		return null;
+	}
+
+	/**
+	 * The payment body without its 3DS session id: what the session was started for.
+	 *
+	 * @param array<string,mixed> $body
+	 */
+	private static function fingerprint( array $body ): string {
+		unset( $body['three_ds_session_id'] );
+		return hash( 'sha256', (string) wp_json_encode( $body ) );
+	}
+
 	/** @param array<string,mixed> $input */
 	private function account( array $input ): ?int {
 		return Provider_Config::account_id( Provider_Config::clean( $input['payment_provider_detail_id'] ?? null ) );
@@ -649,10 +933,13 @@ final class Payment_Orchestrator {
 		return $out;
 	}
 
-	/** @return array{status:int, body:array<string,mixed>} */
-	private function wp_error( \WP_Error $error ): array {
+	/**
+	 * @param string $stage pay(): the stage the browser reads ('' = none).
+	 * @return array{status:int, body:array<string,mixed>}
+	 */
+	private function wp_error( \WP_Error $error, string $stage = '' ): array {
 		$data = (array) $error->get_error_data();
-		return $this->error( (int) ( $data['status'] ?? 422 ), (string) $error->get_error_code(), $error->get_error_message() );
+		return $this->error( (int) ( $data['status'] ?? 422 ), (string) $error->get_error_code(), $error->get_error_message(), $stage !== '' ? [ 'stage' => $stage ] : [] );
 	}
 
 	/** @return array{status:int, body:array<string,mixed>} */

@@ -26,6 +26,8 @@ final class Message_Texts {
 		'ja' => [
 			'next_gateway' => 'お支払いを処理できませんでした。お支払いを完了するには、もう一度カード情報を入力してください。',
 			'retry_same'   => 'お支払いが承認されませんでした。カード情報をご確認いただくか、別のカードをご利用ください。',
+			'three_ds_failed' => 'カード会社でお支払いの確認が完了しませんでした。もう一度お試しください。',
+			'again'        => 'お支払いは完了しておらず、請求もされていません。もう一度お支払いボタンを押してください。',
 			'stop'         => 'お支払いが承認されませんでした。カード会社にお問い合わせいただくか、別のカードをご利用ください。',
 			'verify'       => 'お支払い状況を確認しています。再度お支払いはしないでください。',
 			'unavailable'  => '現在お支払いをご利用いただけません。しばらくしてから再度お試しください。',
@@ -40,6 +42,8 @@ final class Message_Texts {
 		'ko' => [
 			'next_gateway' => '결제를 처리할 수 없습니다. 결제를 완료하려면 카드 정보를 다시 입력해 주세요.',
 			'retry_same'   => '결제가 거절되었습니다. 카드 정보를 확인하시거나 다른 카드를 사용해 주세요.',
+			'three_ds_failed' => '카드사에서 결제를 확인하지 않았습니다. 다시 시도해 주세요.',
+			'again'        => '결제가 완료되지 않았으며 요금이 청구되지 않았습니다. 결제 버튼을 다시 눌러 주세요.',
 			'stop'         => '결제가 거절되었습니다. 카드사에 문의하시거나 다른 카드를 사용해 주세요.',
 			'verify'       => '결제 상태를 확인하고 있습니다. 다시 결제하지 마세요.',
 			'unavailable'  => '지금은 결제를 이용할 수 없습니다. 잠시 후 다시 시도해 주세요.',
@@ -54,6 +58,8 @@ final class Message_Texts {
 		'zh' => [
 			'next_gateway' => '您的付款无法处理。请重新输入银行卡信息以完成付款。',
 			'retry_same'   => '您的付款被拒绝。请检查银行卡信息或使用其他银行卡。',
+			'three_ds_failed' => '您的银行未确认此付款。请重试。',
+			'again'        => '付款未完成，也未扣款。请再次点击付款按钮。',
 			'stop'         => '您的付款被拒绝。请联系您的银行或使用其他银行卡。',
 			'verify'       => '我们正在确认您的付款状态。请勿重复付款。',
 			'unavailable'  => '目前无法付款。请几分钟后再试。',
@@ -68,6 +74,8 @@ final class Message_Texts {
 		'id' => [
 			'next_gateway' => 'Pembayaran Anda tidak dapat diproses. Silakan masukkan kembali detail kartu Anda untuk menyelesaikan pembayaran.',
 			'retry_same'   => 'Pembayaran Anda ditolak. Silakan periksa detail kartu Anda atau gunakan kartu lain.',
+			'three_ds_failed' => 'Bank Anda tidak mengonfirmasi pembayaran. Silakan coba lagi.',
+			'again'        => 'Pembayaran Anda belum selesai dan Anda tidak ditagih. Silakan tekan Bayar lagi.',
 			'stop'         => 'Pembayaran Anda ditolak. Silakan hubungi bank Anda atau gunakan kartu lain.',
 			'verify'       => 'Kami sedang memeriksa status pembayaran Anda. Jangan membayar lagi.',
 			'unavailable'  => 'Pembayaran saat ini tidak tersedia. Silakan coba lagi dalam beberapa menit.',
@@ -82,6 +90,8 @@ final class Message_Texts {
 		'vi' => [
 			'next_gateway' => 'Không thể xử lý thanh toán của bạn. Vui lòng nhập lại thông tin thẻ để hoàn tất thanh toán.',
 			'retry_same'   => 'Thanh toán của bạn bị từ chối. Vui lòng kiểm tra thông tin thẻ hoặc sử dụng thẻ khác.',
+			'three_ds_failed' => 'Ngân hàng của bạn chưa xác nhận thanh toán. Vui lòng thử lại.',
+			'again'        => 'Thanh toán chưa hoàn tất và bạn chưa bị trừ tiền. Vui lòng nhấn Thanh toán lại.',
 			'stop'         => 'Thanh toán của bạn bị từ chối. Vui lòng liên hệ ngân hàng hoặc sử dụng thẻ khác.',
 			'verify'       => 'Chúng tôi đang kiểm tra trạng thái thanh toán. Vui lòng không thanh toán lại.',
 			'unavailable'  => 'Hiện không thể thanh toán. Vui lòng thử lại sau vài phút.',
@@ -96,6 +106,8 @@ final class Message_Texts {
 		'th' => [
 			'next_gateway' => 'ไม่สามารถดำเนินการชำระเงินของคุณได้ กรุณากรอกข้อมูลบัตรอีกครั้งเพื่อชำระเงินให้เสร็จสมบูรณ์',
 			'retry_same'   => 'การชำระเงินของคุณถูกปฏิเสธ กรุณาตรวจสอบข้อมูลบัตรหรือใช้บัตรอื่น',
+			'three_ds_failed' => 'ธนาคารของคุณไม่ได้ยืนยันการชำระเงิน กรุณาลองอีกครั้ง',
+			'again'        => 'การชำระเงินยังไม่เสร็จสมบูรณ์และคุณยังไม่ถูกเรียกเก็บเงิน กรุณากดชำระเงินอีกครั้ง',
 			'stop'         => 'การชำระเงินของคุณถูกปฏิเสธ กรุณาติดต่อธนาคารของคุณหรือใช้บัตรอื่น',
 			'verify'       => 'เรากำลังตรวจสอบสถานะการชำระเงินของคุณ กรุณาอย่าชำระเงินซ้ำ',
 			'unavailable'  => 'ขณะนี้ไม่สามารถชำระเงินได้ กรุณาลองใหม่อีกครั้งในอีกสักครู่',
@@ -110,6 +122,8 @@ final class Message_Texts {
 		'ms' => [
 			'next_gateway' => 'Pembayaran anda tidak dapat diproses. Sila masukkan semula butiran kad anda untuk melengkapkan pembayaran.',
 			'retry_same'   => 'Pembayaran anda ditolak. Sila semak butiran kad anda atau gunakan kad lain.',
+			'three_ds_failed' => 'Bank anda tidak mengesahkan pembayaran. Sila cuba lagi.',
+			'again'        => 'Pembayaran anda tidak selesai dan anda tidak dicaj. Sila tekan Bayar sekali lagi.',
 			'stop'         => 'Pembayaran anda ditolak. Sila hubungi bank anda atau gunakan kad lain.',
 			'verify'       => 'Kami sedang menyemak status pembayaran anda. Jangan bayar sekali lagi.',
 			'unavailable'  => 'Pembayaran tidak tersedia buat masa ini. Sila cuba lagi dalam beberapa minit.',

@@ -92,6 +92,8 @@
         slug: "paypal",
         mount: mount,
         ownButton: true,
+        // createOrder runs on the buyer's click: an order the API refuses keeps the PayPal button (with a notice)
+        intentOnClick: true,
         // PayPal has the buyer's PayPal address; the page asks for none
         email: "provider",
         processingNotice: true,

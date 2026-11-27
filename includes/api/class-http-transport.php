@@ -18,11 +18,18 @@ if ( ! defined( 'ABSPATH' ) ) {
 class Http_Transport {
 
 	/**
-	 * @param string              $path Route relative to the base URL (…/api/v1), e.g. "/payment/stripe/create-payment-intent".
-	 * @param array<string,mixed> $body JSON body.
+	 * Wait for an answer for as long as the API takes (a payment the API runs through several processors). cURL waits
+	 * without limit; another transport (no cURL) waits this many seconds, as WordPress has no "no limit" of its own.
 	 */
-	public function post( string $path, array $body ): Api_Response {
-		return $this->send( 'POST', $path, $body );
+	const NO_LIMIT_FALLBACK = 3600;
+
+	/**
+	 * @param string              $path    Route relative to the base URL (…/api/v1), e.g. "/payment/stripe/create-payment-intent".
+	 * @param array<string,mixed> $body    JSON body.
+	 * @param int|null            $timeout Seconds to wait for the answer: null = the configured API timeout, 0 = no limit.
+	 */
+	public function post( string $path, array $body, ?int $timeout = null ): Api_Response {
+		return $this->send( 'POST', $path, $body, $timeout );
 	}
 
 	/**
@@ -35,18 +42,32 @@ class Http_Transport {
 	}
 
 	/**
-	 * @param string              $method POST or PUT.
-	 * @param array<string,mixed> $body   JSON body.
+	 * @param string              $method  POST or PUT.
+	 * @param array<string,mixed> $body    JSON body.
+	 * @param int|null            $timeout See post().
 	 */
-	private function send( string $method, string $path, array $body ): Api_Response {
+	private function send( string $method, string $path, array $body, ?int $timeout = null ): Api_Response {
 		$api = Config::api();
 		if ( $api['url'] === '' || $api['token'] === '' ) {
 			return Api_Response::local_error( 500, __( 'Payments are not configured on this site.', 'cellon-payment-collection' ), 'not_configured' );
 		}
+		$timeout  = $timeout === null ? (int) $api['timeout'] : max( 0, $timeout );
+		$no_limit = $timeout === 0;
 
-		// A confirm can wait ~60 s on the API (BridgerPay, Vault); shared hosts often cap PHP at 30 s.
+		// A confirm can wait ~60 s on the API (BridgerPay, Vault); shared hosts often cap PHP at 30 s. Without a
+		// limit on the answer, PHP has none either.
 		if ( function_exists( 'set_time_limit' ) ) {
-			@set_time_limit( $api['timeout'] + 10 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+			@set_time_limit( $no_limit ? 0 : $timeout + 10 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+		}
+
+		// WordPress raises any timeout to at least 1 s and cannot say "no limit"; cURL's 0 means no limit, so this
+		// one request gets it on its cURL handle (the connection itself still has WordPress's connect timeout).
+		$unlimited = static function ( $handle ) {
+			curl_setopt( $handle, CURLOPT_TIMEOUT, 0 );
+			curl_setopt( $handle, CURLOPT_TIMEOUT_MS, 0 );
+		};
+		if ( $no_limit ) {
+			add_action( 'http_api_curl', $unlimited, PHP_INT_MAX );
 		}
 
 		$headers = [
@@ -61,17 +82,23 @@ class Http_Transport {
 			'User-Agent'    => Config::user_agent() !== '' ? Config::user_agent() : 'cellon-payment-collection/' . CELLON_PC_VERSION,
 		];
 
-		$started  = microtime( true );
-		$response = wp_remote_request(
-			$api['url'] . '/' . ltrim( $path, '/' ),
-			[
-				'method'      => $method,
-				'timeout'     => $api['timeout'],
-				'redirection' => 0,
-				'headers'     => (array) apply_filters( 'cellon_payment_collection_api_headers', $headers, $path ),
-				'body'        => wp_json_encode( (object) $body ),
-			]
-		);
+		$started = microtime( true );
+		try {
+			$response = wp_remote_request(
+				$api['url'] . '/' . ltrim( $path, '/' ),
+				[
+					'method'      => $method,
+					'timeout'     => $no_limit ? self::NO_LIMIT_FALLBACK : $timeout,
+					'redirection' => 0,
+					'headers'     => (array) apply_filters( 'cellon_payment_collection_api_headers', $headers, $path ),
+					'body'        => wp_json_encode( (object) $body ),
+				]
+			);
+		} finally {
+			if ( $no_limit ) {
+				remove_action( 'http_api_curl', $unlimited, PHP_INT_MAX );
+			}
+		}
 
 		if ( is_wp_error( $response ) ) {
 			Logger::error( 'api.transport', [ 'path' => $path, 'error' => $response->get_error_message() ] );

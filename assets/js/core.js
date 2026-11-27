@@ -9,6 +9,7 @@
  *   restClient(base)              POST to this plugin's REST endpoints ({ meta, data } envelope)
  *   loadScript(src, options)      loads a provider SDK once per URL from the provider's own domain
  *   decide(failure)               failover decision for a failed attempt
+ *   declineNotice(failure)        the message key of a decline the customer may retry on the same form
  *   GatewayError, ApiError, atStage, toFailure
  *
  * A gateway definition:
@@ -22,6 +23,11 @@
  *                                     // or "provider" (the provider's own form; the server reads it at confirm)
  *     emailAtIntent: false,           // the intent keeps the email it was created with: remount when it changes
  *     remountOnRetry: false,          // a declined intent cannot be paid again: mount a new one to retry
+ *     intentOnClick: false,           // true: the provider's own button creates the intent when the buyer clicks it
+ *                                     // (PayPal createOrder). An intent the API refuses then is a failed payment, not
+ *                                     // a gateway that could not load: the button stays for another try
+ *     verifyUntilKnown: false,        // true: after an unclear outcome the server is asked again every few seconds
+ *                                     // until it knows (a payment the API may still be running, Evervault)
  *     processingNotice: true,         // the page shows its green "Processing your payment…" notice on Pay
  *     walletClass: "",                // class on the page's wallet container while this gateway is active
  *     analytics: { referenceKey: "" },// dataLayer first_sale_fronted gets { [referenceKey]: reference }
@@ -32,11 +38,14 @@
  * settings that depend on the site's options (Stripe collects the email only with its Contact Details Element).
  *
  * The mount context:
- *   gateway   { slug, providerId, accountId, publicKey, order, checkoutMode }
+ *   gateway   { slug, providerId, accountId, publicKey, order, checkoutMode, teamId, merchantId }
  *   host      element to render into (removed after the gateway unmounts)
  *   options   this gateway's options from the server (site look, labels, wallet container …)
  *   checkout  { amount, currency, customerEmail }
- *   api       { intent(fields), confirm(fields, accountId), chargeToken(fields) } for this gateway
+ *   api       { intent(fields), confirm(fields, accountId), chargeToken(fields), pay(fields), threeDsSession(fields) }
+ *             for this gateway; pay: a payment the API runs in one call (Evervault): resolves with the paid answer,
+ *             rejects with data.stage intent | payment | confirm; threeDsSession: its 3D Secure session first
+ *             ({ three_ds: "skipped" } | { three_ds: "evervault", three_ds_session_id, status }), nothing charged
  *   events    { ready, processing, succeeded(result), failed(failure), cancelled, accountChanged(gateway) }
  *   page      { email(), reportEmail(address) }
  */
@@ -53,6 +62,8 @@
         email: "page",
         emailAtIntent: false,
         remountOnRetry: false,
+        intentOnClick: false,
+        verifyUntilKnown: false,
         processingNotice: true,
         walletClass: "",
         analytics: null,
@@ -152,6 +163,9 @@
                     order: Number(CP.cleanValue(detail.order)) || index + 1,
                 };
                 if (detail.checkout_mode) gateway.checkoutMode = String(detail.checkout_mode);
+                // Evervault: Team ID next to the App ID in publicKey, and the merchant its wallets use (all public)
+                if (detail.team_id) gateway.teamId = String(detail.team_id);
+                if (detail.merchant_id) gateway.merchantId = String(detail.merchant_id);
                 return gateway;
             })
             .filter(function (gateway) { return !!registry[gateway.slug]; })
@@ -211,16 +225,22 @@
                     body.payment_provider_detail_id = CP.detailId(accountId === undefined ? gateway.accountId : accountId);
                     return body;
                 };
+                /** Body of a step that starts a payment: the fields, the account, the typed email and the plan. */
+                var startBody = function (fields) {
+                    var body = withAccount(fields);
+                    if (checkout && checkout.customerEmail) body.customer_email = checkout.customerEmail;
+                    // The plan picked on a multi-plan page ('' = default price); the server accepts only the
+                    // quiz result's price_list categories and keeps it for the confirm and the cross sale
+                    var category = checkout && typeof checkout.priceCategory === "function" ? checkout.priceCategory() : null;
+                    if (typeof category === "string") body.ab_testing_price_category = category;
+                    return body;
+                };
                 return {
-                    intent: function (fields) {
-                        var body = withAccount(fields);
-                        if (checkout && checkout.customerEmail) body.customer_email = checkout.customerEmail;
-                        // The plan picked on a multi-plan page ('' = default price); the server accepts only the
-                        // quiz result's price_list categories and keeps it for the confirm and the cross sale
-                        var category = checkout && typeof checkout.priceCategory === "function" ? checkout.priceCategory() : null;
-                        if (typeof category === "string") body.ab_testing_price_category = category;
-                        return provider(gateway.slug, "intent", body);
-                    },
+                    intent: function (fields) { return provider(gateway.slug, "intent", startBody(fields)); },
+                    /** A payment the API runs in one call (Evervault); no time limit on the answer */
+                    pay: function (fields) { return provider(gateway.slug, "pay", startBody(fields)); },
+                    /** 3D Secure before such a payment, with the same body: nothing is charged */
+                    threeDsSession: function (fields) { return provider(gateway.slug, "3ds-session", startBody(fields)); },
                     confirm: function (fields, accountId) { return provider(gateway.slug, "confirm", withAccount(fields, accountId)); },
                     chargeToken: function (fields, accountId) {
                         // The BLOX charge takes the intent's body (the session and its card token are bound
@@ -301,6 +321,8 @@
         "0.03", "3.10", "3.11", "3.12", "4.01", "4.02", "4.03", "4.04", "4.05", "4.06", "4.07", "4.09", "5.02", "5.08",
         // BridgerPay deposit status
         "declined_do_not_try_again",
+        // Cellon API (Vault) decline kinds, e.g. Evervault after its processors
+        "payment_blocked", "payment_hard_declined",
     ]);
 
     /** The customer can fix it on the same form (card data, funds, 3DS): another gateway gets the same answer. */
@@ -317,30 +339,48 @@
         "instrument_declined",
         // BridgerPay deposit status
         "declined_due_to_3d_auth_failure", "declined_due_to_funds",
+        // Cellon API (Vault) decline kinds
+        "payment_declined_funds", "payment_3ds_failed",
     ]);
 
     /**
-     * next_gateway | retry_same | stop | verify. Everything else at "payment" is a soft or processor decline
+     * Not a decline: the 3D Secure session could not be used (window not finished, expired, another price, unknown).
+     * Nothing was charged; pressing Pay again starts a new session on the same form (Cellon API, Evervault 3DS).
+     */
+    var AGAIN = set([
+        "three_ds_not_finished", "three_ds_session_mismatch", "three_ds_session_expired", "three_ds_session_not_found",
+    ]);
+
+    /**
+     * next_gateway | retry_same | stop | verify | again. Everything else at "payment" is a soft or processor decline
      * (generic_decline, do_not_honor, Solidgate 0.01 / 3.04 / 5.xx, BridgerPay declined): another acquirer may
-     * approve it.
+     * approve it. "again": the same form stays and the customer presses Pay again (never another gateway).
      */
     CP.decide = function (failure) {
         // Nothing was charged yet: an SDK, key or intent problem always moves on (silently)
         if (failure.stage === "load") return "next_gateway";
+        if (AGAIN[String(failure.code || "").toLowerCase()]) return "again";
         if (failure.stage === "intent") return /already exists/i.test(failure.message || "") ? "verify" : "next_gateway";
         // The provider took the money but the API did not record it (or we never saw its answer)
         if (failure.stage === "confirm") return "verify";
 
         var code = String(failure.code || "").toLowerCase();
-        if (code === "outcome_unknown" || code === "processing") return "verify";
+        if (code === "outcome_unknown" || code === "processing" || code === "payment_result_unknown") return "verify";
         if (STOP[code]) return "stop";
         if (RETRY_SAME[code]) return "retry_same";
         return "next_gateway";
     };
 
+    /** The message of a "retry_same" decline: the bank did not confirm 3D Secure, or any other decline. */
+    CP.declineNotice = function (failure) {
+        return String((failure && failure.code) || "").toLowerCase() === "payment_3ds_failed" ? "three_ds_failed" : "retry_same";
+    };
+
     CP.defaultMessages = {
         next_gateway: "Your payment could not be processed. Please enter your card details again to complete the payment.",
         retry_same: "Your payment was declined. Please check your card details or use another card.",
+        three_ds_failed: "Your bank did not confirm the payment. Please try again.",
+        again: "Your payment was not completed and you were not charged. Please press Pay again.",
         stop: "Your payment was declined. Please contact your bank or use another card.",
         verify: "We are checking the status of your payment. Please do not pay again.",
     };

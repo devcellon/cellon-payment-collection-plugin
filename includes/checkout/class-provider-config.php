@@ -137,6 +137,10 @@ final class Provider_Config {
 				'account_id'    => self::account_id( $account ),
 				'public_key'    => self::clean( $detail['public_key'] ?? null ),
 				'checkout_mode' => in_array( $mode, [ 'blox', 'checkout' ], true ) ? $mode : null,
+				// Evervault: Team ID (its browser SDK needs it next to the App ID in public_key) and the Evervault
+				// merchant its Apple Pay / Google Pay need (merchant_id; evervault_merchant_id accepted). All public.
+				'team_id'       => self::clean( $detail['team_id'] ?? null ),
+				'merchant_id'   => self::clean( $detail['merchant_id'] ?? ( $detail['evervault_merchant_id'] ?? null ) ),
 				'_index'        => $index,
 			];
 
@@ -172,7 +176,7 @@ final class Provider_Config {
 
 		$card = in_array( 'solidgate', $names, true ) ? 'solidgate' : 'stripe';
 		$pick = static function ( string $slug, int $index ) {
-			return [ 'slug' => $slug, 'provider_id' => null, 'account_id' => null, 'public_key' => null, 'checkout_mode' => null, '_index' => $index ];
+			return [ 'slug' => $slug, 'provider_id' => null, 'account_id' => null, 'public_key' => null, 'checkout_mode' => null, 'team_id' => null, 'merchant_id' => null, '_index' => $index ];
 		};
 
 		if ( $registry->is_enabled( $card ) ) {
@@ -248,6 +252,11 @@ final class Provider_Config {
 			];
 			if ( ! empty( $entry['checkout_mode'] ) ) {
 				$item['checkout_mode'] = $entry['checkout_mode'];
+			}
+			foreach ( [ 'team_id', 'merchant_id' ] as $key ) {
+				if ( ! empty( $entry[ $key ] ) ) {
+					$item[ $key ] = $entry[ $key ];
+				}
 			}
 			$out[] = $item;
 		}

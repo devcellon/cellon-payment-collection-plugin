@@ -32,7 +32,7 @@ final class Provider_Registry {
 	private $enabled = null;
 
 	public function __construct() {
-		$built_in = [ new Stripe_Provider(), new Solidgate_Provider(), new Paypal_Provider(), new Bridgerpay_Provider() ];
+		$built_in = [ new Stripe_Provider(), new Solidgate_Provider(), new Paypal_Provider(), new Bridgerpay_Provider(), new Evervault_Provider() ];
 
 		/**
 		 * Add or replace provider handlers. Each must implement Provider (extend Abstract_Provider) and

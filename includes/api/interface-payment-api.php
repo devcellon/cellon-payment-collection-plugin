@@ -52,6 +52,25 @@ interface Payment_Api {
 	public function charge_token( string $provider, array $body ): Api_Response;
 
 	/**
+	 * A payment the API runs in one call (Evervault): the common first-sale initiate with the provider's payment data
+	 * charges it, the API trying its own processors in turn, and answers paid (2xx with the confirm's data), declined
+	 * (402) or unknown (504, or no answer). With three_ds_session_id the API reads that 3DS session first.
+	 *
+	 * @param array<string,mixed> $body    Canonical body built by the provider handler.
+	 * @param int                 $timeout Seconds to wait for the answer; 0 = until the API answers.
+	 */
+	public function pay( string $provider, array $body, int $timeout ): Api_Response;
+
+	/**
+	 * Start 3D Secure for a one-call payment (Evervault): the payment's body to the first-sale 3ds-session route.
+	 * Nothing is charged. Answers three_ds "skipped" (pay without a session) or "evervault" with three_ds_session_id
+	 * and a status ("action-required": the bank's window first).
+	 *
+	 * @param array<string,mixed> $body The payment's body, without three_ds_session_id.
+	 */
+	public function three_ds_session( string $provider, array $body ): Api_Response;
+
+	/**
 	 * Cross sale on the first sale's saved payment method.
 	 *
 	 * @param array<string,mixed> $body
